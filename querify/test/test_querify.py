@@ -1,9 +1,10 @@
+import re
 from datetime import datetime
 
 from ..utility import deep_equal
 from ..querify import BooleanExpr, Expr, And, Equal, SchemaLiteral, RegexLiteral, IntLiteral, MatchRegex, NotEqual, \
     StringLiteral, InverseMatchRegex, Or, GreaterThan, GreaterThanOrEqual, LessThan, LessThanOrEqual, DateTimeLiteral, \
-    FloatLiteral, ClassFromJsonWithSubclassDictMeta, Select, ShowTagKeys
+    FloatLiteral, ClassFromJsonWithSubclassDictMeta, Select, ShowTagKeys, ShowColumns
 
 
 def test_meta_class():
@@ -108,7 +109,7 @@ def test_normalize_query_json():
     assert deep_equal(expr_dict, expected_expr_dict, unordered_list=True)
 
 
-def test_generate_influxql():
+def test_generate_query():
     metric_filter = {
         'rule_id': [6666, '7777', 8888],
         'act_type': 'logging',
@@ -132,9 +133,40 @@ def test_generate_influxql():
     }
 
     expr = Expr.from_json(metric_filter)
-    influx_query = expr.to_query()
-    expected_influx_query = """("act_type" = 'logging') AND ("expected_fire_rate" = 99.9) AND ("expected_fire_volume" = 10000) AND ("rule_name" != 'logging_rddms') AND ("rule_name" !~ /logging_r..s/) AND ("rule_name" =~ /logging_.*/) AND (("rule_id" = '7777') OR ("rule_id" = 6666) OR ("rule_id" = 8888)) AND (("version" = 4) OR (("create_ts" <= '2015-12-31T12:05:00Z') AND ("create_ts" > '2014-01-01T00:00:00Z') AND ("version" < 3) AND ("version" >= 1)))"""
-    assert influx_query == expected_influx_query
+    assert expr.to_query('influx') == \
+        """("act_type" = 'logging') AND ("expected_fire_rate" = 99.9) AND ("expected_fire_volume" = 10000) AND ("rule_name" != 'logging_rddms') AND ("rule_name" !~ /logging_r..s/) AND ("rule_name" =~ /logging_.*/) AND (("rule_id" = '7777') OR ("rule_id" = 6666) OR ("rule_id" = 8888)) AND (("version" = 4) OR (("create_ts" <= '2015-12-31T12:05:00Z') AND ("create_ts" > '2014-01-01T00:00:00Z') AND ("version" < 3) AND ("version" >= 1)))"""
+    assert expr.to_query('mysql') == \
+        """(((create_ts <= '2015-12-31 12:05:00') AND (create_ts > '2014-01-01 00:00:00') AND (version < 3) AND (version >= 1)) OR (version = 4)) AND ((rule_id = '7777') OR (rule_id = 6666) OR (rule_id = 8888)) AND (act_type = 'logging') AND (expected_fire_rate = 99.9) AND (expected_fire_volume = 10000) AND (rule_name <> 'logging_rddms') AND (rule_name NOT REGEXP 'logging_r..s') AND (rule_name REGEXP 'logging_.*')"""
+    assert deep_equal(expr.to_query('mongo'), {
+        '$and': [
+            {
+                '$or': [
+                    {'rule_id': {'$eq': 6666}},
+                    {'rule_id': {'$eq': '7777'}},
+                    {'rule_id': {'$eq': 8888}}
+                ]
+            },
+            {'act_type': {'$eq': 'logging'}},
+            {'expected_fire_volume': {'$eq': 10000}},
+            {'expected_fire_rate': {'$eq': 99.9}},
+            {
+                '$or': [
+                    {
+                        '$and': [
+                            {'create_ts': {'$lte': datetime(2015, 12, 31, 12, 5)}},
+                            {'create_ts': {'$gt': datetime(2014, 1, 1, 0, 0)}},
+                            {'version': {'$lt': 3}},
+                            {'version': {'$gte': 1}},
+                        ]
+                    },
+                    {'version': {'$eq': 4}}
+                ]
+            },
+            {'rule_name': re.compile('logging_.*')},
+            {'rule_name': {'$ne': 'logging_rddms'}},
+            {'rule_name': {'$not': re.compile('logging_r..s')}}
+        ]
+    }, unordered_list=True)
 
 
 def test_iter_exprs():
@@ -204,14 +236,24 @@ def test_select_stmt():
         ]
     }
 
-    assert Select(measurement='m', retention_policy='rp', db='db',
-                  columns=['a', 'b'], where=metric_filter).to_query() == \
+    assert Select(table='m', retention_policy='rp', db='db',
+                  columns=['a', 'b'], where=metric_filter).to_query('influx') == \
         """SELECT "a","b" FROM "db"."rp"."m" WHERE ("act_type" = 'logging') AND ("expected_fire_rate" = 99.9) AND ("expected_fire_volume" = 10000) AND ("rule_name" != 'logging_rddms') AND ("rule_name" !~ /logging_r..s/) AND ("rule_name" =~ /logging_.*/) AND (("rule_id" = '7777') OR ("rule_id" = 6666) OR ("rule_id" = 8888)) AND (("version" = 4) OR (("create_ts" <= '2015-12-31T12:05:00Z') AND ("create_ts" > '2014-01-01T00:00:00Z') AND ("version" < 3) AND ("version" >= 1)))"""
-    assert Select(measurement='m', db='db',
-                  columns=[], where=metric_filter).to_query() == \
+    assert Select(table='m', retention_policy='rp', db='db',
+                  columns=['a', 'b'], where=metric_filter).to_query('mysql') == \
+        """SELECT a,b FROM db.m WHERE (((create_ts <= '2015-12-31 12:05:00') AND (create_ts > '2014-01-01 00:00:00') AND (version < 3) AND (version >= 1)) OR (version = 4)) AND ((rule_id = '7777') OR (rule_id = 6666) OR (rule_id = 8888)) AND (act_type = 'logging') AND (expected_fire_rate = 99.9) AND (expected_fire_volume = 10000) AND (rule_name <> 'logging_rddms') AND (rule_name NOT REGEXP 'logging_r..s') AND (rule_name REGEXP 'logging_.*')"""
+
+    assert Select(table='m', db='db',
+                  columns=[], where=metric_filter).to_query('influx') == \
         """SELECT * FROM "db".."m" WHERE ("act_type" = 'logging') AND ("expected_fire_rate" = 99.9) AND ("expected_fire_volume" = 10000) AND ("rule_name" != 'logging_rddms') AND ("rule_name" !~ /logging_r..s/) AND ("rule_name" =~ /logging_.*/) AND (("rule_id" = '7777') OR ("rule_id" = 6666) OR ("rule_id" = 8888)) AND (("version" = 4) OR (("create_ts" <= '2015-12-31T12:05:00Z') AND ("create_ts" > '2014-01-01T00:00:00Z') AND ("version" < 3) AND ("version" >= 1)))"""
-    assert Select(measurement='m').to_query() == \
+    assert Select(table='m', db='db',
+                  columns=[], where=metric_filter).to_query('mysql') == \
+        """SELECT * FROM db.m WHERE (((create_ts <= '2015-12-31 12:05:00') AND (create_ts > '2014-01-01 00:00:00') AND (version < 3) AND (version >= 1)) OR (version = 4)) AND ((rule_id = '7777') OR (rule_id = 6666) OR (rule_id = 8888)) AND (act_type = 'logging') AND (expected_fire_rate = 99.9) AND (expected_fire_volume = 10000) AND (rule_name <> 'logging_rddms') AND (rule_name NOT REGEXP 'logging_r..s') AND (rule_name REGEXP 'logging_.*')"""
+
+    assert Select(table='m').to_query('influx') == \
         'SELECT * FROM "m"'
+    assert Select(table='m').to_query('mysql') == \
+        'SELECT * FROM m'
 
 
 def test_show_tag_keys():
@@ -237,8 +279,15 @@ def test_show_tag_keys():
         ]
     }
 
-    assert ShowTagKeys(measurement='m', retention_policy='rp', db='db', where=metric_filter).to_query() == \
+    assert ShowTagKeys(measurement='m', retention_policy='rp', db='db', where=metric_filter).to_query('influx') == \
         """SHOW TAG KEYS ON "db" FROM "rp"."m" WHERE ("act_type" = 'logging') AND ("expected_fire_rate" = 99.9) AND ("expected_fire_volume" = 10000) AND ("rule_name" != 'logging_rddms') AND ("rule_name" !~ /logging_r..s/) AND ("rule_name" =~ /logging_.*/) AND (("rule_id" = '7777') OR ("rule_id" = 6666) OR ("rule_id" = 8888)) AND (("version" = 4) OR (("create_ts" <= '2015-12-31T12:05:00Z') AND ("create_ts" > '2014-01-01T00:00:00Z') AND ("version" < 3) AND ("version" >= 1)))"""
-    assert ShowTagKeys(measurement='m').to_query() == \
+    assert ShowTagKeys(measurement='m').to_query('influx') == \
         'SHOW TAG KEYS FROM "m"'
+
+
+def test_show_columns():
+    assert ShowColumns(table='m', db='db').to_query('influx') == \
+        'SHOW TAG KEYS ON "db" FROM "m"'
+    assert ShowColumns(table='m', db='db').to_query('mysql') == \
+        'SHOW COLUMNS FROM db.m'
 

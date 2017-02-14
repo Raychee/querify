@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Union, Dict, Optional, Any, List
 
@@ -65,6 +66,11 @@ class ClassFromJsonWithSubclassDictMeta(ClassWithSubclassDictMeta):
                     else:
                         raise UnrecognizedJsonableClass('class "{}" is marked final but no init args are defined'
                                                         .format(subcls.__name__))
+                elif subcls.new_from_json is cls.new_from_json:
+                    raise UnrecognizedJsonableClass('class "{}" constructs an object from json "{!r}" '
+                                                    'by calling itself recursively, '
+                                                    'no subclass\' construct method can be found'
+                                                    .format(subcls.__name__, json))
                 else:
                     return subcls.new_from_json(json)
             except (KeyError, UnrecognizedExprType):
@@ -79,19 +85,23 @@ class ClassFromJsonWithSubclassDictMeta(ClassWithSubclassDictMeta):
 
 
 class Query:
-    def to_query(self):
-        pass
+    def to_query(self, type: str):
+        method = getattr(self, 'to_query_' + type, None)
+        if method is None:
+            raise NotImplementedError('generating {} from {!r} is not supported'.format(type, self))
+        return method()
+
+    def to_query_influx(self) -> str:
+        raise NotImplementedError('generating InfluxQL from {!r} is not implemented'.format(self))
+
+    def to_query_mysql(self) -> str:
+        raise NotImplementedError('generating MySQL from {!r} is not implemented'.format(self))
+
+    def to_query_mongo(self) -> JsonType:
+        raise NotImplementedError('generating MongoDB query from {!r} is not implemented'.format(self))
 
 
-class InfluxQL(Query):
-    def to_query(self) -> str:
-        return ''
-
-    def __str__(self):
-        return self.to_query()
-
-
-class Expr(InfluxQL, metaclass=ClassFromJsonWithSubclassDictMeta):
+class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
     base = True
 
     @classmethod
@@ -157,32 +167,56 @@ class StringLiteral(LiteralExpr):
     final = True
     key = str
 
-    def to_query(self) -> str:
+    def to_query_influx(self) -> str:
         return "'{}'".format(self.literal)
+
+    def to_query_mysql(self) -> str:
+        return "'{}'".format(self.literal)
+
+    def to_query_mongo(self) -> JsonType:
+        return self.literal
 
 
 class IntLiteral(LiteralExpr):
     final = True
     key = int
 
-    def to_query(self) -> str:
+    def to_query_influx(self) -> str:
         return repr(self.literal)
+
+    def to_query_mysql(self) -> str:
+        return repr(self.literal)
+
+    def to_query_mongo(self) -> JsonType:
+        return self.literal
 
 
 class FloatLiteral(LiteralExpr):
     final = True
     key = float
 
-    def to_query(self) -> str:
+    def to_query_influx(self) -> str:
         return repr(self.literal)
+
+    def to_query_mysql(self) -> str:
+        return repr(self.literal)
+
+    def to_query_mongo(self) -> JsonType:
+        return self.literal
 
 
 class DateTimeLiteral(LiteralExpr):
     final = True
     key = datetime
 
-    def to_query(self) -> str:
+    def to_query_influx(self) -> str:
         return "'{:%Y-%m-%dT%H:%M:%SZ}'".format(self.literal)
+
+    def to_query_mysql(self) -> str:
+        return "'{:%Y-%m-%d %H:%M:%S}'".format(self.literal)
+
+    def to_query_mongo(self) -> JsonType:
+        return self.literal
 
 
 class RegexLiteral(LiteralExpr):
@@ -196,8 +230,14 @@ class RegexLiteral(LiteralExpr):
     def cls_keys_from_json(cls, json):
         yield 'regex'
 
-    def to_query(self) -> str:
+    def to_query_influx(self) -> str:
         return '/{}/'.format(self.literal)
+
+    def to_query_mysql(self) -> str:
+        return "'{}'".format(self.literal)
+
+    def to_query_mongo(self):
+        return re.compile(self.literal)
 
 
 class SchemaLiteral(LiteralExpr):
@@ -211,8 +251,14 @@ class SchemaLiteral(LiteralExpr):
     def cls_keys_from_json(cls, json):
         yield 'schema'
 
-    def to_query(self) -> str:
+    def to_query_influx(self) -> str:
         return '"{}"'.format(self.literal)
+
+    def to_query_mysql(self) -> str:
+        return self.literal
+
+    def to_query_mongo(self) -> JsonType:
+        return self.literal
 
 
 # Operator Expr
@@ -220,7 +266,9 @@ class OperatorExpr(Expr):
     base = True
     key = 'operator_expr'
 
-    operator = ''
+    operator_influx = None
+    operator_mysql = None
+    operator_mongo = None
 
     @classmethod
     def normalize_eval_expr_dict(cls, filter: dict) -> dict:
@@ -248,15 +296,15 @@ class OperatorExpr(Expr):
                         if op == '__in__':
                             exprs.append({'__or__': [{tag: {'__eq__': v}} for v in condition]})
                         else:
-                            raise InvalidQuery('"{}" operator is not applied on a list (actually got "{}").'
-                                               .format(op, condition))
+                            raise InvalidQuery('"{}" operator cannot be applied on a list.'
+                                               .format(op))
                     else:
                         raise InvalidQuery('Query condition is unrecognized: {!r}'
                                            .format(condition))
             else:
                 raise InvalidQuery('Invalid query "{{ {}: {} }}". '
                                    'A tag\' filter must be of one of the following types: '
-                                   'regex / string / numerical / list / a dict {operator: operand}.'
+                                   'regex / string / numerical / list / a dict {{ operator: operand }}.'
                                    .format(tag, tag_filter))
         if len(exprs) > 1:
             return {'__and__': exprs}
@@ -307,67 +355,93 @@ class BinaryBooleanExpr(BooleanExpr):
         yield self.left
         yield self.right
 
-    def to_query(self):
-        return '{} {} {}'.format(self.left.to_query(), self.operator, self.right.to_query())
+    def to_query_influx(self):
+        return '{} {} {}'.format(self.left.to_query_influx(), self.operator_influx, self.right.to_query_influx())
+
+    def to_query_mysql(self) -> str:
+        return '{} {} {}'.format(self.left.to_query_mysql(), self.operator_mysql, self.right.to_query_mysql())
+
+    def to_query_mongo(self) -> JsonType:
+        return {self.left.to_query_mongo(): {self.operator_mongo: self.right.to_query_mongo()}}
 
     def __repr__(self):
         return '{}(left={}, right={})'.format(type(self).__name__, self.left, self.right)
 
 
 class Equal(BinaryBooleanExpr):
-    operator = '='
-    key = '__eq__'
     final = True
+    key = '__eq__'
+    operator_influx = '='
+    operator_mysql = '='
+    operator_mongo = '$eq'
 
 
 class NotEqual(BinaryBooleanExpr):
-    operator = '!='
-    key = '__neq__'
     final = True
+    key = '__neq__'
+    operator_influx = '!='
+    operator_mysql = '<>'
+    operator_mongo = '$ne'
 
 
 class GreaterThan(BinaryBooleanExpr):
-    operator = '>'
-    key = '__gt__'
     final = True
+    key = '__gt__'
+    operator_influx = '>'
+    operator_mysql = '>'
+    operator_mongo = '$gt'
 
 
 class GreaterThanOrEqual(BinaryBooleanExpr):
-    operator = '>='
-    key = '__gte__'
     final = True
+    key = '__gte__'
+    operator_influx = '>='
+    operator_mysql = '>='
+    operator_mongo = '$gte'
 
 
 class LessThan(BinaryBooleanExpr):
-    operator = '<'
-    key = '__lt__'
     final = True
+    key = '__lt__'
+    operator_influx = '<'
+    operator_mysql = '<'
+    operator_mongo = '$lt'
 
 
 class LessThanOrEqual(BinaryBooleanExpr):
-    operator = '<='
-    key = '__lte__'
     final = True
+    key = '__lte__'
+    operator_influx = '<='
+    operator_mysql = '<='
+    operator_mongo = '$lte'
 
 
 class MatchRegex(BinaryBooleanExpr):
-    operator = '=~'
-    key = '__regex__'
     final = True
+    key = '__regex__'
+    operator_influx = '=~'
+    operator_mysql = 'REGEXP'
 
     def __init__(self, left, right):
         super().__init__(left, right)
         self.right = RegexLiteral.from_json(right)
+
+    def to_query_mongo(self) -> JsonType:
+        return {self.left.to_query_mongo(): self.right.to_query_mongo()}
 
 
 class InverseMatchRegex(BinaryBooleanExpr):
-    operator = '!~'
-    key = '__iregex__'
     final = True
+    key = '__iregex__'
+    operator_influx = '!~'
+    operator_mysql = 'NOT REGEXP'
 
     def __init__(self, left, right):
         super().__init__(left, right)
         self.right = RegexLiteral.from_json(right)
+
+    def to_query_mongo(self) -> JsonType:
+        return {self.left.to_query_mongo(): {'$not': self.right.to_query_mongo()}}
 
 
 class LogicalExpr(BooleanExpr):
@@ -377,8 +451,14 @@ class LogicalExpr(BooleanExpr):
             raise InvalidQuery('The "{}" operator is not applied on a list.'.format(self.operator_json))
         self.exprs = [BooleanExpr.from_json(e) for e in exprs]
 
-    def to_query(self):
-        return ' {} '.format(self.operator).join(sorted('(' + e.to_query() + ')' for e in self.exprs))
+    def to_query_influx(self):
+        return ' {} '.format(self.operator_influx).join(sorted('(' + e.to_query_influx() + ')' for e in self.exprs))
+
+    def to_query_mysql(self):
+        return ' {} '.format(self.operator_mysql).join(sorted('(' + e.to_query_mysql() + ')' for e in self.exprs))
+
+    def to_query_mongo(self) -> JsonType:
+        return {self.operator_mongo: [e.to_query_mongo() for e in self.exprs]}
 
     def __repr__(self):
         return '{}({!r})'.format(type(self).__name__, self.exprs)
@@ -396,59 +476,85 @@ class LogicalExpr(BooleanExpr):
 
 
 class And(LogicalExpr):
-    operator = 'AND'
-    key = '__and__'
     final = True
+    key = '__and__'
+    operator_influx = 'AND'
+    operator_mysql = 'AND'
+    operator_mongo = '$and'
 
 
 class Or(LogicalExpr):
-    operator = 'OR'
-    key = '__or__'
     final = True
+    key = '__or__'
+    operator_influx = 'OR'
+    operator_mysql = 'OR'
+    operator_mongo = '$or'
 
 
 # Statement
-class Stmt(InfluxQL):
+class Stmt(Query):
     pass
 
 
 class Select(Stmt):
-    def __init__(self, measurement: Union[SchemaLiteral, str],
+    def __init__(self, table: Union[SchemaLiteral, str],
                  retention_policy: Optional[Union[SchemaLiteral, str]] = None,
                  db: Optional[Union[SchemaLiteral, str]] = None,
                  columns: Optional[List[Union[SchemaLiteral, str]]] = None,
                  where: Optional[Union[BooleanExpr, JsonDictType]] = None):
         super().__init__()
-        self.measurement = SchemaLiteral.from_json(measurement)
-        self.retention_policy = retention_policy and SchemaLiteral.from_json(retention_policy) or retention_policy
-        self.db = db and SchemaLiteral.from_json(db) or db
-        self.columns = columns and [SchemaLiteral.from_json(c) for c in columns] or columns
-        self.where = where and BooleanExpr.from_json(where) or where
+        self.table = SchemaLiteral.from_json(table)
+        self.retention_policy = retention_policy and SchemaLiteral.from_json(retention_policy)
+        self.db = db and SchemaLiteral.from_json(db)
+        self.columns = columns and [SchemaLiteral.from_json(c) for c in columns]
+        self.where = where and BooleanExpr.from_json(where)
 
-    def to_query(self):
+    def to_query_influx(self):
         if self.columns:
-            ql_columns = ','.join(c.to_query() for c in self.columns)
+            ql_select = 'SELECT ' + ','.join(c.to_query_influx() for c in self.columns)
         else:
-            ql_columns = '*'
+            ql_select = 'SELECT *'
 
         if self.db:
             if self.retention_policy:
-                ql_db = self.db.to_query() + '.' + self.retention_policy.to_query() + '.' + self.measurement.to_query()
+                ql_db = self.db.to_query_influx() + '.' + self.retention_policy.to_query_influx() + '.' + self.table.to_query_influx()
             else:
-                ql_db = self.db.to_query() + '..' + self.measurement.to_query()
+                ql_db = self.db.to_query_influx() + '..' + self.table.to_query_influx()
         elif self.retention_policy:
-            ql_db = self.retention_policy.to_query() + '.' + self.measurement.to_query()
+            ql_db = self.retention_policy.to_query_influx() + '.' + self.table.to_query_influx()
         else:
-            ql_db = self.measurement.to_query()
+            ql_db = self.table.to_query_influx()
+        ql_from = ' FROM ' + ql_db
 
         if self.where:
-            ql_where = self.where.to_query()
+            ql_where = self.where.to_query_influx()
             if ql_where:
                 ql_where = ' WHERE ' + ql_where
         else:
             ql_where = ''
 
-        return 'SELECT {} FROM {}{}'.format(ql_columns, ql_db, ql_where)
+        return ql_select + ql_from + ql_where
+
+    def to_query_mysql(self):
+        if self.columns:
+            ql_select = 'SELECT ' + ','.join(c.to_query_mysql() for c in self.columns)
+        else:
+            ql_select = 'SELECT *'
+
+        if self.db:
+            ql_db = self.db.to_query_mysql() + '.' + self.table.to_query_mysql()
+        else:
+            ql_db = self.table.to_query_mysql()
+        ql_from = ' FROM ' + ql_db
+
+        if self.where:
+            ql_where = self.where.to_query_mysql()
+            if ql_where:
+                ql_where = ' WHERE ' + ql_where
+        else:
+            ql_where = ''
+
+        return ql_select + ql_from + ql_where
 
 
 class ShowTagKeys(Stmt):
@@ -457,30 +563,56 @@ class ShowTagKeys(Stmt):
                  db: Optional[Union[SchemaLiteral, str]] = None,
                  where: Optional[Union[BooleanExpr, JsonDictType]] = None):
         super().__init__()
-        self.measurement = measurement and SchemaLiteral.from_json(measurement) or measurement
-        self.retention_policy = retention_policy and SchemaLiteral.from_json(retention_policy) or retention_policy
-        self.db = db and SchemaLiteral.from_json(db) or db
-        self.where = where and BooleanExpr.from_json(where) or where
+        self.measurement = measurement and SchemaLiteral.from_json(measurement)
+        self.retention_policy = retention_policy and SchemaLiteral.from_json(retention_policy)
+        self.db = db and SchemaLiteral.from_json(db)
+        self.where = where and BooleanExpr.from_json(where)
 
-    def to_query(self):
+    def to_query_influx(self):
         if self.db:
-            ql_on = ' ON ' + self.db.to_query()
+            ql_on = ' ON ' + self.db.to_query_influx()
         else:
             ql_on = ''
 
         if self.measurement:
             if self.retention_policy:
-                ql_from = ' FROM ' + self.retention_policy.to_query() + '.' + self.measurement.to_query()
+                ql_from = ' FROM ' + self.retention_policy.to_query_influx() + '.' + self.measurement.to_query_influx()
             else:
-                ql_from = ' FROM ' + self.measurement.to_query()
+                ql_from = ' FROM ' + self.measurement.to_query_influx()
         else:
             ql_from = ''
 
         if self.where:
-            ql_where = self.where.to_query()
+            ql_where = self.where.to_query_influx()
             if ql_where:
                 ql_where = ' WHERE ' + ql_where
         else:
             ql_where = ''
 
-        return 'SHOW TAG KEYS{}{}{}'.format(ql_on, ql_from, ql_where)
+        return 'SHOW TAG KEYS' + ql_on + ql_from + ql_where
+
+
+class ShowColumns(Stmt):
+    def __init__(self, table: Union[SchemaLiteral, str], db: Optional[Union[SchemaLiteral, str]] = None):
+        super().__init__()
+        self.table = SchemaLiteral.from_json(table)
+        self.db = db and SchemaLiteral.from_json(db)
+
+    def to_query_influx(self):
+        if self.db:
+            ql_on = ' ON ' + self.db.to_query_influx()
+        else:
+            ql_on = ''
+
+        ql_from = ' FROM ' + self.table.to_query_influx()
+
+        return 'SHOW TAG KEYS' + ql_on + ql_from
+
+    def to_query_mysql(self):
+        if self.db:
+            ql_from = ' FROM ' + self.db.to_query_mysql() + '.' + self.table.to_query_mysql()
+        else:
+            ql_from = ' FROM ' + self.table.to_query_mysql()
+
+        return 'SHOW COLUMNS' + ql_from
+
