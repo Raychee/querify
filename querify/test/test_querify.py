@@ -291,3 +291,104 @@ def test_show_columns():
     assert ShowColumns(table='m', db='db').to_query('mysql') == \
         'SHOW COLUMNS FROM db.m'
 
+
+def test_to_query_pandas():
+    query_dict = {
+        "__or__": [
+            {"__and__": [
+                {"inconsistency": {"__neq__": "low"}},
+                {"latency": {"__lt__": 3.2}}
+            ]},
+            {"__and__": [
+                {"inconsistency": {"__neq__": "low"}},
+                {"latency": {"__gte__": 3.2}}
+            ]},
+            {"__and__": [
+                {"inconsistency": {"__eq__": "low"}}
+            ]},
+        ]
+    }
+
+    ground_truth = "((inconsistency != 'low') & (latency < 3.2)) | ((inconsistency != 'low') & (latency >= 3.2)) | (inconsistency == 'low')"
+
+    e = Expr.from_json(query_dict)
+    assert e.to_query_pandas() == ground_truth
+
+
+def test_not_and_null():
+    metric_filter = {
+        '__or__': [
+            {
+                'version': {'__eq__': 4}
+            }
+        ],
+        '__and__': [
+            {'rule_name': {'__neq__': 'logging_rddms'}},
+            {'__not__': {'rule_name': {'__eq__': 'invalid_name'}}},
+            {'rule_body': {'__null__': False}}
+        ]
+    }
+
+    expr = Expr.from_json(metric_filter)
+    assert expr.to_query('mysql') == \
+           "((version = 4)) AND (NOT (rule_name = 'invalid_name')) AND (rule_body is NOT NULL) AND (rule_name <> 'logging_rddms')"
+    assert expr.to_query('pandas') == \
+           "((version == 4)) & (rule_name != 'logging_rddms') & (~(rule_name == 'invalid_name')) & (~pandas.isnull(rule_body))"
+    assert deep_equal(expr.to_query('mongo'), {
+        '$and': [
+            {
+                '$or': [
+                    {'version': {'$eq': 4}}
+                ]
+            },
+            {'rule_name': {'$ne': 'logging_rddms'}},
+            {'rule_name': {'$not': {'$eq': 'invalid_name'}}},
+            {'rule_body': {'$ne': None}}
+        ]
+    }, unordered_list=True)
+
+
+def test_null2():
+    input_json = {
+        '__or__': [
+            {'__and__': [
+                {'__or__': [
+                    {'inconsistency_1': {'__lt__': 0.5}},
+                    {'inconsistency_1': {'__null__': True}}]},
+                {'__or__': [
+                    {'latency': {'__lt__': 3.2}},
+                    {'latency': {'__null__': True}}
+                ]}
+            ]}
+        ]}
+
+    e = Expr.from_json(input_json)
+    assert e.to_query_pandas() == \
+        "(((inconsistency_1 < 0.5) | (pandas.isnull(inconsistency_1))) & ((latency < 3.2) | (pandas.isnull(latency))))"
+
+
+def test_missing():
+    metric_filter = {
+        '__or__': [
+            {
+                'version': {'__eq__': 4}
+            }
+        ],
+        '__and__': [
+            {'rule_name': {'__neq__': 'logging_rddms'}},
+            {'rule_body': {'__missing__': True}}
+        ]
+    }
+
+    expr = Expr.from_json(metric_filter)
+    assert deep_equal(expr.to_query('mongo'), {
+        '$and': [
+            {
+                '$or': [
+                    {'version': {'$eq': 4}}
+                ]
+            },
+            {'rule_name': {'$ne': 'logging_rddms'}},
+            {'rule_body': {'$exists': 1}}
+        ]
+    }, unordered_list=True)
