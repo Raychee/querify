@@ -100,6 +100,9 @@ class Query:
     def to_query_mongo(self) -> JsonType:
         raise NotImplementedError('generating MongoDB query from {!r} is not implemented'.format(self))
 
+    def to_query_pandas(self) -> str:
+        raise NotImplementedError('generating pandas query from {!r} is not implemented.'.format(self))
+
 
 class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
     base = True
@@ -176,6 +179,26 @@ class StringLiteral(LiteralExpr):
     def to_query_mongo(self) -> JsonType:
         return self.literal
 
+    def to_query_pandas(self) -> str:
+        return "'{}'".format(self.literal)
+
+
+class BooleanLiteral(LiteralExpr):
+    final = True
+    key = bool
+
+    def to_query_influx(self) -> str:
+        return repr(self.literal)
+
+    def to_query_mysql(self) -> str:
+        return repr(self.literal)
+
+    def to_query_mongo(self) -> JsonType:
+        return self.literal
+
+    def to_query_pandas(self) -> str:
+        return repr(self.literal)
+
 
 class IntLiteral(LiteralExpr):
     final = True
@@ -190,6 +213,9 @@ class IntLiteral(LiteralExpr):
     def to_query_mongo(self) -> JsonType:
         return self.literal
 
+    def to_query_pandas(self) -> str:
+        return repr(self.literal)
+
 
 class FloatLiteral(LiteralExpr):
     final = True
@@ -203,6 +229,9 @@ class FloatLiteral(LiteralExpr):
 
     def to_query_mongo(self) -> JsonType:
         return self.literal
+
+    def to_query_pandas(self) -> str:
+        return repr(self.literal)
 
 
 class DateTimeLiteral(LiteralExpr):
@@ -260,6 +289,9 @@ class SchemaLiteral(LiteralExpr):
     def to_query_mongo(self) -> JsonType:
         return self.literal
 
+    def to_query_pandas(self) -> str:
+        return self.literal
+
 
 # Operator Expr
 class OperatorExpr(Expr):
@@ -269,6 +301,7 @@ class OperatorExpr(Expr):
     operator_influx = None
     operator_mysql = None
     operator_mongo = None
+    operator_pandas = None
 
     @classmethod
     def normalize_eval_expr_dict(cls, filter: dict) -> dict:
@@ -289,18 +322,21 @@ class OperatorExpr(Expr):
                 else:
                     exprs.append({'__or__': [{tag: {'__eq__': v}} for v in tag_filter]})
             elif isinstance(tag_filter, dict):
-                for op, condition in tag_filter.items():
-                    if isinstance(condition, (str, int, float, datetime)):
-                        exprs.append({tag: {op: condition}})
-                    elif isinstance(condition, list):
-                        if op == '__in__':
-                            exprs.append({'__or__': [{tag: {'__eq__': v}} for v in condition]})
+                if tag == '__not__':
+                    exprs.append({'__not__': cls.normalize_eval_expr_dict(tag_filter)})
+                else:
+                    for op, condition in tag_filter.items():
+                        if isinstance(condition, (str, int, float, datetime)):
+                            exprs.append({tag: {op: condition}})
+                        elif isinstance(condition, list):
+                            if op == '__in__':
+                                exprs.append({'__or__': [{tag: {'__eq__': v}} for v in condition]})
+                            else:
+                                raise InvalidQuery('"{}" operator cannot be applied on a list.'
+                                                   .format(op))
                         else:
-                            raise InvalidQuery('"{}" operator cannot be applied on a list.'
-                                               .format(op))
-                    else:
-                        raise InvalidQuery('Query condition is unrecognized: {!r}'
-                                           .format(condition))
+                            raise InvalidQuery('Query condition is unrecognized: {!r}'
+                                               .format(condition))
             else:
                 raise InvalidQuery('Invalid query "{{ {}: {} }}". '
                                    'A tag\' filter must be of one of the following types: '
@@ -336,6 +372,49 @@ class BooleanExpr(OperatorExpr):
     pass
 
 
+class UnaryBooleanExpr(BooleanExpr):
+    def __init__(self, operand: Union[Expr, JsonDictType]):
+        super().__init__()
+        self.operand = BooleanExpr.from_json(operand)
+
+    @classmethod
+    def init_args_from_json(cls, json):
+        try:
+            _, operand = next(iter(json.items()))
+            return {'operand': operand}
+        except StopIteration:
+            pass
+
+    def iter_sub_expr(self):
+        yield self.operand
+
+    def __repr__(self):
+        return '{}(operand={})'.format(type(self).__name__, self.operand)
+
+
+class Not(UnaryBooleanExpr):
+    final = True
+    key = '__not__'
+    # operator_influx = '<not>'
+    operator_mysql = 'NOT'
+    operator_mongo = '$not'
+    operator_pandas = '~'
+
+    # def to_query_influx(self):
+    #     return '{} {}'.format(self.operator_influx, self.operand.to_query_influx())
+
+    def to_query_mysql(self) -> str:
+        return '{} ({})'.format(self.operator_mysql, self.operand.to_query_mysql())
+
+    def to_query_mongo(self) -> JsonType:
+        tmp_mongo_query = self.operand.to_query_mongo()
+        k, v = next(iter(tmp_mongo_query.items()))
+        return {k: {self.operator_mongo: v}}
+
+    def to_query_pandas(self) -> str:
+        return '{}({})'.format(self.operator_pandas, self.operand.to_query_pandas())
+
+
 class BinaryBooleanExpr(BooleanExpr):
     def __init__(self, left: Union[SchemaLiteral, str], right):
         super().__init__()
@@ -364,6 +443,9 @@ class BinaryBooleanExpr(BooleanExpr):
     def to_query_mongo(self) -> JsonType:
         return {self.left.to_query_mongo(): {self.operator_mongo: self.right.to_query_mongo()}}
 
+    def to_query_pandas(self) -> str:
+        return '{} {} {}'.format(self.left.to_query_pandas(), self.operator_pandas, self.right.to_query_pandas())
+
     def __repr__(self):
         return '{}(left={}, right={})'.format(type(self).__name__, self.left, self.right)
 
@@ -374,6 +456,7 @@ class Equal(BinaryBooleanExpr):
     operator_influx = '='
     operator_mysql = '='
     operator_mongo = '$eq'
+    operator_pandas = '=='
 
 
 class NotEqual(BinaryBooleanExpr):
@@ -382,6 +465,7 @@ class NotEqual(BinaryBooleanExpr):
     operator_influx = '!='
     operator_mysql = '<>'
     operator_mongo = '$ne'
+    operator_pandas = '!='
 
 
 class GreaterThan(BinaryBooleanExpr):
@@ -390,6 +474,7 @@ class GreaterThan(BinaryBooleanExpr):
     operator_influx = '>'
     operator_mysql = '>'
     operator_mongo = '$gt'
+    operator_pandas = '>'
 
 
 class GreaterThanOrEqual(BinaryBooleanExpr):
@@ -398,6 +483,7 @@ class GreaterThanOrEqual(BinaryBooleanExpr):
     operator_influx = '>='
     operator_mysql = '>='
     operator_mongo = '$gte'
+    operator_pandas = '>='
 
 
 class LessThan(BinaryBooleanExpr):
@@ -406,6 +492,7 @@ class LessThan(BinaryBooleanExpr):
     operator_influx = '<'
     operator_mysql = '<'
     operator_mongo = '$lt'
+    operator_pandas = '<'
 
 
 class LessThanOrEqual(BinaryBooleanExpr):
@@ -414,6 +501,7 @@ class LessThanOrEqual(BinaryBooleanExpr):
     operator_influx = '<='
     operator_mysql = '<='
     operator_mongo = '$lte'
+    operator_pandas = '<='
 
 
 class MatchRegex(BinaryBooleanExpr):
@@ -444,11 +532,45 @@ class InverseMatchRegex(BinaryBooleanExpr):
         return {self.left.to_query_mongo(): {'$not': self.right.to_query_mongo()}}
 
 
+class Null(BinaryBooleanExpr):
+    final = True
+    key = '__null__'
+
+    def __init__(self, left: Union[SchemaLiteral, str], right: BooleanLiteral):
+        super().__init__(left, right)
+
+        if not isinstance(self.right, BooleanLiteral):
+            raise InvalidQuery('The operand of "{}" must be either true or false.'.format(self.key))
+
+    def to_query_mysql(self) -> str:
+        return '{} {}'.format(self.left.to_query_mysql(), 'is NULL' if self.right.literal else 'is NOT NULL')
+
+    def to_query_mongo(self) -> JsonType:
+        return {self.left.to_query_mongo(): {'$eq' if self.right.literal else '$ne': None}}
+
+    def to_query_pandas(self) -> str:
+        return '{}pandas.isnull({})'.format('' if self.right.literal else '~', self.left.to_query_pandas())
+
+
+class Missing(BinaryBooleanExpr):
+    final = True
+    key = '__missing__'
+
+    def __init__(self, left: Union[SchemaLiteral, str], right: BooleanLiteral):
+        super().__init__(left, right)
+
+        if not isinstance(self.right, BooleanLiteral):
+            raise InvalidQuery('The operand of "{}" must be either true or false.'.format(self.key))
+
+    def to_query_mongo(self) -> JsonType:
+        return {self.left.to_query_mongo(): {'$exists': 1 if self.right.literal else -1}}
+
+
 class LogicalExpr(BooleanExpr):
     def __init__(self, exprs: List[Union[BooleanExpr, JsonDictType]]):
         super().__init__()
         if not isinstance(exprs, list):
-            raise InvalidQuery('The "{}" operator is not applied on a list.'.format(self.operator_json))
+            raise InvalidQuery('The "{}" operator is not applied on a list.'.format(self.key))
         self.exprs = [BooleanExpr.from_json(e) for e in exprs]
 
     def to_query_influx(self):
@@ -459,6 +581,9 @@ class LogicalExpr(BooleanExpr):
 
     def to_query_mongo(self) -> JsonType:
         return {self.operator_mongo: [e.to_query_mongo() for e in self.exprs]}
+
+    def to_query_pandas(self) -> str:
+        return ' {} '.format(self.operator_pandas).join(sorted('(' + e.to_query_pandas() + ')' for e in self.exprs))
 
     def __repr__(self):
         return '{}({!r})'.format(type(self).__name__, self.exprs)
@@ -481,6 +606,7 @@ class And(LogicalExpr):
     operator_influx = 'AND'
     operator_mysql = 'AND'
     operator_mongo = '$and'
+    operator_pandas = '&'
 
 
 class Or(LogicalExpr):
@@ -489,6 +615,7 @@ class Or(LogicalExpr):
     operator_influx = 'OR'
     operator_mysql = 'OR'
     operator_mongo = '$or'
+    operator_pandas = '|'
 
 
 # Statement
