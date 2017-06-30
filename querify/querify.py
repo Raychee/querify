@@ -5,8 +5,8 @@ from typing import Union, Dict, Optional, Any, List
 from .errors import InvalidQuery, UnrecognizedExprType, UnrecognizedJsonableClass
 
 
-JsonDictType = Dict[str, Any]
-JsonType = Union[int, float, str, JsonDictType]
+JsonObjectType = Dict[str, Any]
+JsonType = Union[int, float, str, JsonObjectType]
 
 
 class ClassWithSubclassDictMeta(type):
@@ -80,7 +80,7 @@ class ClassFromJsonWithSubclassDictMeta(ClassWithSubclassDictMeta):
     def cls_keys_from_json(cls, json: JsonType):
         return; yield
 
-    def init_args_from_json(cls, json) -> Optional[Dict[str, Any]]:
+    def init_args_from_json(cls, json) -> Optional[JsonObjectType]:
         pass
 
 
@@ -102,6 +102,9 @@ class Query:
 
     def to_query_pandas(self) -> str:
         raise NotImplementedError('generating pandas query from {!r} is not implemented.'.format(self))
+
+    def to_query_pluto(self) -> str:
+        raise NotImplementedError('generating pluto query from {!r} is not implemented.'.format(self))
 
 
 class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
@@ -182,6 +185,9 @@ class StringLiteral(LiteralExpr):
     def to_query_pandas(self) -> str:
         return "'{}'".format(self.literal)
 
+    def to_query_pluto(self) -> str:
+        return "\"{}\"".format(self.literal)
+
 
 class BooleanLiteral(LiteralExpr):
     final = True
@@ -216,6 +222,9 @@ class IntLiteral(LiteralExpr):
     def to_query_pandas(self) -> str:
         return repr(self.literal)
 
+    def to_query_pluto(self) -> str:
+        return repr(self.literal)
+
 
 class FloatLiteral(LiteralExpr):
     final = True
@@ -231,6 +240,9 @@ class FloatLiteral(LiteralExpr):
         return self.literal
 
     def to_query_pandas(self) -> str:
+        return repr(self.literal)
+
+    def to_query_pluto(self) -> str:
         return repr(self.literal)
 
 
@@ -268,6 +280,9 @@ class RegexLiteral(LiteralExpr):
     def to_query_mongo(self):
         return re.compile(self.literal)
 
+    def to_query_pluto(self) -> str:
+        return "\"{}\"".format(self.literal)
+
 
 class SchemaLiteral(LiteralExpr):
     final = True
@@ -292,6 +307,9 @@ class SchemaLiteral(LiteralExpr):
     def to_query_pandas(self) -> str:
         return self.literal
 
+    def to_query_pluto(self) -> str:
+        return self.literal
+
 
 # Operator Expr
 class OperatorExpr(Expr):
@@ -309,28 +327,35 @@ class OperatorExpr(Expr):
         for tag, tag_filter in filter.items():
             if isinstance(tag_filter, str):
                 if tag_filter.startswith('/') and tag_filter.endswith('/'):
-                    exprs.append({tag: {'__regex__': tag_filter[1:-1]}})
+                    exprs.append({tag: {MatchRegex.key: tag_filter[1:-1]}})
                 else:
-                    exprs.append({tag: {'__eq__': tag_filter}})
+                    exprs.append({tag: {Equal.key: tag_filter}})
             elif isinstance(tag_filter, (int, float)):
-                exprs.append({tag: {'__eq__': tag_filter}})
+                exprs.append({tag: {Equal.key: tag_filter}})
             elif isinstance(tag_filter, list):
-                if tag == '__and__':
-                    exprs.extend([cls.normalize_eval_expr_dict(c) for c in tag_filter])
-                elif tag == '__or__':
-                    exprs.append({'__or__': [cls.normalize_eval_expr_dict(c) for c in tag_filter]})
+                if tag == And.key:
+                    # exprs.extend([cls.normalize_eval_expr_dict(c) for c in tag_filter])
+                    exprs.extend(tag_filter)
+                elif tag == Or.key:
+                    # exprs.append({Or.key: [cls.normalize_eval_expr_dict(c) for c in tag_filter]})
+                    exprs.append({Or.key: tag_filter})
+                elif tag == Any.key:
+                    # exprs.append({Any.key: [cls.normalize_eval_expr_dict(c) for c in tag_filter]})
+                    exprs.append({Any.key: tag_filter})
                 else:
-                    exprs.append({'__or__': [{tag: {'__eq__': v}} for v in tag_filter]})
+                    exprs.append({Or.key: [{tag: {Equal.key: v}} for v in tag_filter]})
             elif isinstance(tag_filter, dict):
-                if tag == '__not__':
-                    exprs.append({'__not__': cls.normalize_eval_expr_dict(tag_filter)})
+                if tag == Not.key:
+                    # exprs.append({Not.key: cls.normalize_eval_expr_dict(tag_filter)})
+                    exprs.append({Not.key: tag_filter})
                 else:
                     for op, condition in tag_filter.items():
                         if isinstance(condition, (str, int, float, datetime)):
                             exprs.append({tag: {op: condition}})
                         elif isinstance(condition, list):
                             if op == '__in__':
-                                exprs.append({'__or__': [{tag: {'__eq__': v}} for v in condition]})
+                                # exprs.append({'__or__': [{tag: {'__eq__': v}} for v in condition]})
+                                exprs.append({tag: {op: condition}})
                             else:
                                 raise InvalidQuery('"{}" operator cannot be applied on a list.'
                                                    .format(op))
@@ -343,7 +368,7 @@ class OperatorExpr(Expr):
                                    'regex / string / numerical / list / a dict {{ operator: operand }}.'
                                    .format(tag, tag_filter))
         if len(exprs) > 1:
-            return {'__and__': exprs}
+            return {And.key: exprs}
         elif len(exprs) == 1:
             return exprs[0]
         else:
@@ -373,7 +398,7 @@ class BooleanExpr(OperatorExpr):
 
 
 class UnaryBooleanExpr(BooleanExpr):
-    def __init__(self, operand: Union[Expr, JsonDictType]):
+    def __init__(self, operand: Union[Expr, JsonObjectType]):
         super().__init__()
         self.operand = BooleanExpr.from_json(operand)
 
@@ -399,6 +424,7 @@ class Not(UnaryBooleanExpr):
     operator_mysql = 'NOT'
     operator_mongo = '$not'
     operator_pandas = '~'
+    operator_pluto = 'it is not true that'
 
     # def to_query_influx(self):
     #     return '{} {}'.format(self.operator_influx, self.operand.to_query_influx())
@@ -413,6 +439,9 @@ class Not(UnaryBooleanExpr):
 
     def to_query_pandas(self) -> str:
         return '{}({})'.format(self.operator_pandas, self.operand.to_query_pandas())
+
+    def to_query_pluto(self) -> str:
+        return '{} {}'.format(self.operator_pluto, self.operand.to_query_pluto())
 
 
 class BinaryBooleanExpr(BooleanExpr):
@@ -446,6 +475,9 @@ class BinaryBooleanExpr(BooleanExpr):
     def to_query_pandas(self) -> str:
         return '{} {} {}'.format(self.left.to_query_pandas(), self.operator_pandas, self.right.to_query_pandas())
 
+    def to_query_pluto(self) -> str:
+        return '{} {} {}'.format(self.left.to_query_pluto(), self.operator_pluto, self.right.to_query_pluto())
+
     def __repr__(self):
         return '{}(left={}, right={})'.format(type(self).__name__, self.left, self.right)
 
@@ -457,6 +489,7 @@ class Equal(BinaryBooleanExpr):
     operator_mysql = '='
     operator_mongo = '$eq'
     operator_pandas = '=='
+    operator_pluto = 'equals'
 
 
 class NotEqual(BinaryBooleanExpr):
@@ -466,6 +499,7 @@ class NotEqual(BinaryBooleanExpr):
     operator_mysql = '<>'
     operator_mongo = '$ne'
     operator_pandas = '!='
+    operator_pluto = 'does not equal'
 
 
 class GreaterThan(BinaryBooleanExpr):
@@ -475,6 +509,7 @@ class GreaterThan(BinaryBooleanExpr):
     operator_mysql = '>'
     operator_mongo = '$gt'
     operator_pandas = '>'
+    operator_pluto = 'is more than'
 
 
 class GreaterThanOrEqual(BinaryBooleanExpr):
@@ -484,6 +519,7 @@ class GreaterThanOrEqual(BinaryBooleanExpr):
     operator_mysql = '>='
     operator_mongo = '$gte'
     operator_pandas = '>='
+    operator_pluto = 'is at least'
 
 
 class LessThan(BinaryBooleanExpr):
@@ -493,6 +529,7 @@ class LessThan(BinaryBooleanExpr):
     operator_mysql = '<'
     operator_mongo = '$lt'
     operator_pandas = '<'
+    operator_pluto = 'is less than'
 
 
 class LessThanOrEqual(BinaryBooleanExpr):
@@ -502,6 +539,7 @@ class LessThanOrEqual(BinaryBooleanExpr):
     operator_mysql = '<='
     operator_mongo = '$lte'
     operator_pandas = '<='
+    operator_pluto = 'is at most'
 
 
 class MatchRegex(BinaryBooleanExpr):
@@ -551,6 +589,9 @@ class Null(BinaryBooleanExpr):
     def to_query_pandas(self) -> str:
         return '{}pandas.isnull({})'.format('' if self.right.literal else '~', self.left.to_query_pandas())
 
+    def to_query_pluto(self) -> str:
+        return '{} {}'.format(self.left.to_query_pluto(), 'is null' if self.right.literal else 'is not null')
+
 
 class Missing(BinaryBooleanExpr):
     final = True
@@ -567,7 +608,7 @@ class Missing(BinaryBooleanExpr):
 
 
 class LogicalExpr(BooleanExpr):
-    def __init__(self, exprs: List[Union[BooleanExpr, JsonDictType]]):
+    def __init__(self, exprs: List[Union[BooleanExpr, JsonObjectType]]):
         super().__init__()
         if not isinstance(exprs, list):
             raise InvalidQuery('The "{}" operator is not applied on a list.'.format(self.key))
@@ -584,6 +625,9 @@ class LogicalExpr(BooleanExpr):
 
     def to_query_pandas(self) -> str:
         return ' {} '.format(self.operator_pandas).join(sorted('(' + e.to_query_pandas() + ')' for e in self.exprs))
+
+    def to_query_pluto(self) -> str:
+        return ' {} '.format(self.operator_pluto).join(sorted('(' + e.to_query_pluto() + ')' for e in self.exprs))
 
     def __repr__(self):
         return '{}({!r})'.format(type(self).__name__, self.exprs)
@@ -607,6 +651,7 @@ class And(LogicalExpr):
     operator_mysql = 'AND'
     operator_mongo = '$and'
     operator_pandas = '&'
+    operator_pluto = 'and'
 
 
 class Or(LogicalExpr):
@@ -616,6 +661,15 @@ class Or(LogicalExpr):
     operator_mysql = 'OR'
     operator_mongo = '$or'
     operator_pandas = '|'
+    operator_pluto = 'or'
+
+
+class Any(LogicalExpr):
+    final = True
+    key = '__any__'
+
+    def to_query_pluto(self):
+        return 'any of the following conditions is true :\n' + '\n'.join(sorted('      - ' + e.to_query_pluto() for e in self.exprs))
 
 
 # Statement
@@ -628,7 +682,7 @@ class Select(Stmt):
                  retention_policy: Optional[Union[SchemaLiteral, str]] = None,
                  db: Optional[Union[SchemaLiteral, str]] = None,
                  columns: Optional[List[Union[SchemaLiteral, str]]] = None,
-                 where: Optional[Union[BooleanExpr, JsonDictType]] = None):
+                 where: Optional[Union[BooleanExpr, JsonObjectType]] = None):
         super().__init__()
         self.table = SchemaLiteral.from_json(table)
         self.retention_policy = retention_policy and SchemaLiteral.from_json(retention_policy)
@@ -688,7 +742,7 @@ class ShowTagKeys(Stmt):
     def __init__(self, measurement: Optional[Union[SchemaLiteral, str]] = None,
                  retention_policy: Optional[Union[SchemaLiteral, str]] = None,
                  db: Optional[Union[SchemaLiteral, str]] = None,
-                 where: Optional[Union[BooleanExpr, JsonDictType]] = None):
+                 where: Optional[Union[BooleanExpr, JsonObjectType]] = None):
         super().__init__()
         self.measurement = measurement and SchemaLiteral.from_json(measurement)
         self.retention_policy = retention_policy and SchemaLiteral.from_json(retention_policy)

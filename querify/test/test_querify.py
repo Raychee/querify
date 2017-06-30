@@ -54,59 +54,59 @@ def test_meta_class():
     assert deep_equal(E.subclasses, {'E1': E1})
 
 
-def test_normalize_query_json():
-    metric_filter = {
-        'rule_id': [6666, '7777', 8888],
-        'act_type': 'logging',
-        'expected_fire_volume': 10000,
-        'expected_fire_rate': 99.9,
-        '__or__': [
-            {
-                'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5),
-                              '__gt__': datetime(2014, 1, 1, 0, 0)},
-                'version': {'__lt__': 3, '__gte__': 1},
-            },
-            {'version': {'__eq__': 4}}
-        ],
-        '__and__': [
-            {'rule_name': '/logging_.*/'},
-            {'rule_name': {'__neq__': 'logging_rddms'}},
-            {'rule_name': {'__iregex__': 'logging_r..s'}}
-        ]
-    }
-
-    expr_dict = BooleanExpr.normalize_eval_expr_dict(metric_filter)
-    expected_expr_dict = {
-        '__and__': [
-            {
-                '__or__': [
-                    {'rule_id': {'__eq__': 6666}},
-                    {'rule_id': {'__eq__': '7777'}},
-                    {'rule_id': {'__eq__': 8888}}
-                ]
-            },
-            {'act_type': {'__eq__': 'logging'}},
-            {'expected_fire_volume': {'__eq__': 10000}},
-            {'expected_fire_rate': {'__eq__': 99.9}},
-            {
-                '__or__': [
-                    {
-                        '__and__': [
-                            {'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5)}},
-                            {'create_ts': {'__gt__': datetime(2014, 1, 1, 0, 0)}},
-                            {'version': {'__lt__': 3}},
-                            {'version': {'__gte__': 1}},
-                        ]
-                    },
-                    {'version': {'__eq__': 4}}
-                ]
-            },
-            {'rule_name': {'__regex__': 'logging_.*'}},
-            {'rule_name': {'__neq__': 'logging_rddms'}},
-            {'rule_name': {'__iregex__': 'logging_r..s'}}
-        ]
-    }
-    assert deep_equal(expr_dict, expected_expr_dict, unordered_list=True)
+# def test_normalize_query_json():
+#     metric_filter = {
+#         'rule_id': [6666, '7777', 8888],
+#         'act_type': 'logging',
+#         'expected_fire_volume': 10000,
+#         'expected_fire_rate': 99.9,
+#         '__or__': [
+#             {
+#                 'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5),
+#                               '__gt__': datetime(2014, 1, 1, 0, 0)},
+#                 'version': {'__lt__': 3, '__gte__': 1},
+#             },
+#             {'version': {'__eq__': 4}}
+#         ],
+#         '__and__': [
+#             {'rule_name': '/logging_.*/'},
+#             {'rule_name': {'__neq__': 'logging_rddms'}},
+#             {'rule_name': {'__iregex__': 'logging_r..s'}}
+#         ]
+#     }
+#
+#     expr_dict = BooleanExpr.normalize_eval_expr_dict(metric_filter)
+#     expected_expr_dict = {
+#         '__and__': [
+#             {
+#                 '__or__': [
+#                     {'rule_id': {'__eq__': 6666}},
+#                     {'rule_id': {'__eq__': '7777'}},
+#                     {'rule_id': {'__eq__': 8888}}
+#                 ]
+#             },
+#             {'act_type': {'__eq__': 'logging'}},
+#             {'expected_fire_volume': {'__eq__': 10000}},
+#             {'expected_fire_rate': {'__eq__': 99.9}},
+#             {
+#                 '__or__': [
+#                     {
+#                         '__and__': [
+#                             {'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5)}},
+#                             {'create_ts': {'__gt__': datetime(2014, 1, 1, 0, 0)}},
+#                             {'version': {'__lt__': 3}},
+#                             {'version': {'__gte__': 1}},
+#                         ]
+#                     },
+#                     {'version': {'__eq__': 4}}
+#                 ]
+#             },
+#             {'rule_name': {'__regex__': 'logging_.*'}},
+#             {'rule_name': {'__neq__': 'logging_rddms'}},
+#             {'rule_name': {'__iregex__': 'logging_r..s'}}
+#         ]
+#     }
+#     assert deep_equal(expr_dict, expected_expr_dict, unordered_list=True)
 
 
 def test_generate_query():
