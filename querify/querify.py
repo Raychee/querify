@@ -320,6 +320,7 @@ class OperatorExpr(Expr):
     operator_mysql = None
     operator_mongo = None
     operator_pandas = None
+    operator_pluto = None
 
     @classmethod
     def normalize_eval_expr_dict(cls, filter: dict) -> dict:
@@ -334,19 +335,15 @@ class OperatorExpr(Expr):
                 exprs.append({tag: {Equal.key: tag_filter}})
             elif isinstance(tag_filter, list):
                 if tag == And.key:
-                    # exprs.extend([cls.normalize_eval_expr_dict(c) for c in tag_filter])
                     exprs.extend(tag_filter)
                 elif tag == Or.key:
-                    # exprs.append({Or.key: [cls.normalize_eval_expr_dict(c) for c in tag_filter]})
                     exprs.append({Or.key: tag_filter})
                 elif tag == Any.key:
-                    # exprs.append({Any.key: [cls.normalize_eval_expr_dict(c) for c in tag_filter]})
                     exprs.append({Any.key: tag_filter})
                 else:
                     exprs.append({Or.key: [{tag: {Equal.key: v}} for v in tag_filter]})
             elif isinstance(tag_filter, dict):
                 if tag == Not.key:
-                    # exprs.append({Not.key: cls.normalize_eval_expr_dict(tag_filter)})
                     exprs.append({Not.key: tag_filter})
                 else:
                     for op, condition in tag_filter.items():
@@ -354,7 +351,6 @@ class OperatorExpr(Expr):
                             exprs.append({tag: {op: condition}})
                         elif isinstance(condition, list):
                             if op == '__in__':
-                                # exprs.append({'__or__': [{tag: {'__eq__': v}} for v in condition]})
                                 exprs.append({tag: {op: condition}})
                             else:
                                 raise InvalidQuery('"{}" operator cannot be applied on a list.'
@@ -367,12 +363,10 @@ class OperatorExpr(Expr):
                                    'A tag\' filter must be of one of the following types: '
                                    'regex / string / numerical / list / a dict {{ operator: operand }}.'
                                    .format(tag, tag_filter))
-        if len(exprs) > 1:
-            return {And.key: exprs}
-        elif len(exprs) == 1:
+        if len(exprs) == 1:
             return exprs[0]
         else:
-            return {}
+            return {And.key: exprs}
 
     @classmethod
     def new_from_json(cls, json: dict):

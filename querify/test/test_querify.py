@@ -109,6 +109,15 @@ def test_meta_class():
 #     assert deep_equal(expr_dict, expected_expr_dict, unordered_list=True)
 
 
+def test_empty_query():
+    expr = Expr.from_json({})
+    assert expr.to_query('influx') == ''
+    assert expr.to_query('mysql') == ''
+    assert expr.to_query('pandas') == ''
+    assert expr.to_query('pluto') == ''
+    assert deep_equal(expr.to_query('mongo'), {'$and': []})
+
+
 def test_generate_query():
     metric_filter = {
         'rule_id': [6666, '7777', 8888],
@@ -392,3 +401,33 @@ def test_missing():
             {'rule_body': {'$exists': 1}}
         ]
     }, unordered_list=True)
+
+
+def test_pluto():
+    #test: or, and, any,does not equal, equals,is at least, is less than, is at most, is more than
+    metric_filter = {
+        "__any__": [
+            {"__and__": [
+                {"inconsistency": {"__neq__": "low"}},
+                {"latency": {"__lt__": 3.2}}
+            ]},
+            {"__and__": [
+                {"inconsistency": {"__neq__": "low"}},
+                {"latency": {"__gte__": 3.2}}
+            ]},
+            {"__and__": [
+                {"inconsistency": {"__eq__": "low"}},
+                {"__or__": [
+                    {"latency": {"__lte__": -1}},
+                    {"latency": {"__gt__": 100}}
+                ]}
+            ]}
+        ]
+    }
+
+    expr = Expr.from_json(metric_filter)
+    result = expr.to_query_pluto()
+
+    assert result == \
+        'any of the following conditions is true :\n      - ((latency is at most -1) or (latency is more than 100)) and (inconsistency equals "low")\n      - (inconsistency does not equal "low") and (latency is at least 3.2)\n      - (inconsistency does not equal "low") and (latency is less than 3.2)'
+    print(result)
