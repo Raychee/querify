@@ -121,6 +121,24 @@ def test_empty_query():
     assert deep_equal(expr.to_query('mongo'), {'$and': []})
 
 
+def test_nested_empty_query():
+    expr = Expr.from_json({
+        '__and__': [
+            {},
+            {'__or__': [
+                {
+                    'version': {'__eq__': 4}
+                }
+            ]}
+        ]
+    })
+    assert expr.to_query('influx') == '(("version" = 4))'
+    assert expr.to_query('mysql') == '((version = 4))'
+    assert expr.to_query('pandas') == '((version == 4))'
+    assert expr.to_query('pluto') == '((version equals 4))'
+    assert deep_equal(expr.to_query('mongo'), {'$and': [{'$or': [{'version': {'$eq': 4}}]}]})
+
+
 def test_generate_query_for_influx():
     query_json = {
         'rule_id': [6666, '7777', 8888],

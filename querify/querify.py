@@ -731,7 +731,8 @@ class LogicalExpr(BooleanExpr):
         super().__init__()
         if not isinstance(exprs, list):
             raise InvalidQuery('The "{}" operator is not applied on a list.'.format(self.key))
-        self.exprs = [BooleanExpr.from_json(e) for e in exprs]
+        exprs = (BooleanExpr.from_json(e) for e in exprs)
+        self.exprs = [e for e in exprs if isinstance(e, LogicalExpr) and len(e) > 0 or not isinstance(e, LogicalExpr)]
 
     def to_query_influx(self):
         if self.operator_influx is None:
@@ -760,6 +761,9 @@ class LogicalExpr(BooleanExpr):
 
     def __repr__(self):
         return '{}({!r})'.format(type(self).__name__, self.exprs)
+
+    def __len__(self):
+        return len(self.exprs)
 
     @classmethod
     def init_args_from_json(cls, json):
