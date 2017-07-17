@@ -6,7 +6,8 @@ from .errors import InvalidQuery, UnrecognizedExprType, UnrecognizedJsonableClas
 
 
 JsonObjectType = Dict[str, Any]
-JsonType = Union[int, float, str, JsonObjectType]
+JsonValueType = Union[int, float, str]
+JsonType = Union[JsonValueType, JsonObjectType]
 
 
 class ClassWithSubclassDictMeta(type):
@@ -104,7 +105,7 @@ class Query:
         raise NotImplementedError('generating pandas query from {!r} is not implemented.'.format(self))
 
     def to_query_pluto(self) -> str:
-        raise NotImplementedError('generating pluto query from {!r} is not implemented.'.format(self))
+        raise NotImplementedError('generating pluto conditions from {!r} is not implemented.'.format(self))
 
 
 class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
@@ -325,14 +326,14 @@ class OperatorExpr(Expr):
     @classmethod
     def normalize_eval_expr_dict(cls, filter: dict) -> dict:
         exprs = []
-        for tag, tag_filter in filter.items():
+        for tag, tag_filter in sorted(filter.items()):
             if isinstance(tag_filter, str):
                 if tag_filter.startswith('/') and tag_filter.endswith('/'):
                     exprs.append({tag: {MatchRegex.key: tag_filter[1:-1]}})
                 else:
-                    exprs.append({tag: {Equal.key: tag_filter}})
+                    exprs.append({tag: {EqualValue.key: tag_filter}})
             elif isinstance(tag_filter, (int, float)):
-                exprs.append({tag: {Equal.key: tag_filter}})
+                exprs.append({tag: {EqualValue.key: tag_filter}})
             elif isinstance(tag_filter, list):
                 if tag == And.key:
                     exprs.extend(tag_filter)
@@ -341,16 +342,16 @@ class OperatorExpr(Expr):
                 elif tag == Any.key:
                     exprs.append({Any.key: tag_filter})
                 else:
-                    exprs.append({Or.key: [{tag: {Equal.key: v}} for v in tag_filter]})
+                    exprs.append({tag: {In.key: tag_filter}})
             elif isinstance(tag_filter, dict):
                 if tag == Not.key:
                     exprs.append({Not.key: tag_filter})
                 else:
-                    for op, condition in tag_filter.items():
+                    for op, condition in sorted(tag_filter.items()):
                         if isinstance(condition, (str, int, float, datetime)):
                             exprs.append({tag: {op: condition}})
                         elif isinstance(condition, list):
-                            if op == '__in__':
+                            if op in (In.key, NotIn.key):
                                 exprs.append({tag: {op: condition}})
                             else:
                                 raise InvalidQuery('"{}" operator cannot be applied on a list.'
@@ -439,10 +440,10 @@ class Not(UnaryBooleanExpr):
 
 
 class BinaryBooleanExpr(BooleanExpr):
-    def __init__(self, left: Union[SchemaLiteral, str], right):
+    def __init__(self, left, right):
         super().__init__()
         self.left = SchemaLiteral.from_json(left)
-        self.right = LiteralExpr.from_json(right)
+        self.right = right
 
     @classmethod
     def init_args_from_json(cls, json):
@@ -453,32 +454,64 @@ class BinaryBooleanExpr(BooleanExpr):
         except StopIteration:
             pass
 
+    def __repr__(self):
+        return '{}(left={}, right={})'.format(type(self).__name__, self.left, self.right)
+
+
+class BinaryComparisonExpr(BinaryBooleanExpr):
     def iter_sub_expr(self):
         yield self.left
         yield self.right
 
     def to_query_influx(self):
+        if self.operator_influx is None:
+            raise NotImplementedError('generating InfluxQL from operator "{}" is not implemented'.format(self.key))
         return '{} {} {}'.format(self.left.to_query_influx(), self.operator_influx, self.right.to_query_influx())
 
     def to_query_mysql(self) -> str:
+        if self.operator_mysql is None:
+            raise NotImplementedError('generating MySQL from operator "{}" is not implemented'.format(self.key))
         return '{} {} {}'.format(self.left.to_query_mysql(), self.operator_mysql, self.right.to_query_mysql())
 
     def to_query_mongo(self) -> JsonType:
+        if self.operator_mysql is None:
+            raise NotImplementedError('generating MongoDB query from operator "{}" is not implemented'.format(self.key))
         return {self.left.to_query_mongo(): {self.operator_mongo: self.right.to_query_mongo()}}
 
     def to_query_pandas(self) -> str:
+        if self.operator_pandas is None:
+            raise NotImplementedError('generating pandas query from operator "{}" is not implemented'.format(self.key))
         return '{} {} {}'.format(self.left.to_query_pandas(), self.operator_pandas, self.right.to_query_pandas())
 
     def to_query_pluto(self) -> str:
+        if self.operator_pluto is None:
+            raise NotImplementedError('generating pluto conditions from operator "{}" is not implemented'.format(self.key))
         return '{} {} {}'.format(self.left.to_query_pluto(), self.operator_pluto, self.right.to_query_pluto())
 
-    def __repr__(self):
-        return '{}(left={}, right={})'.format(type(self).__name__, self.left, self.right)
+
+class FieldCompareValueExpr(BinaryComparisonExpr):
+    def __init__(self, left: Union[SchemaLiteral, str], right):
+        super().__init__(left, right)
+        self.right = LiteralExpr.from_json(right)
 
 
-class Equal(BinaryBooleanExpr):
-    final = True
-    key = '__eq__'
+class FieldCompareFieldExpr(BinaryComparisonExpr):
+    def __init__(self, left: Union[SchemaLiteral, str], right: Union[SchemaLiteral, str]):
+        super().__init__(left, right)
+        if not isinstance(self.right, (SchemaLiteral, str)):
+            raise InvalidQuery('The operand of "{}" must be of string type referring to a field name.'.format(self.key))
+        self.right = SchemaLiteral.from_json(right)
+
+
+class FieldAssertionExpr(BinaryBooleanExpr):
+    def __init__(self, left: Union[SchemaLiteral, str], right: Union[BooleanLiteral, bool]):
+        super().__init__(left, right)
+        if not isinstance(self.right, (BooleanLiteral, bool)):
+            raise InvalidQuery('The operand of "{}" must be either true or false.'.format(self.key))
+        self.right = BooleanLiteral.from_json(right)
+
+
+class Equal:
     operator_influx = '='
     operator_mysql = '='
     operator_mongo = '$eq'
@@ -486,9 +519,18 @@ class Equal(BinaryBooleanExpr):
     operator_pluto = 'equals'
 
 
-class NotEqual(BinaryBooleanExpr):
+# Inheritance order matters! WHY??
+class EqualValue(Equal, FieldCompareValueExpr):
     final = True
-    key = '__neq__'
+    key = '__eq__'
+
+
+class EqualField(Equal, FieldCompareFieldExpr):
+    final = True
+    key = '__eqf__'
+
+
+class NotEqual:
     operator_influx = '!='
     operator_mysql = '<>'
     operator_mongo = '$ne'
@@ -496,9 +538,17 @@ class NotEqual(BinaryBooleanExpr):
     operator_pluto = 'does not equal'
 
 
-class GreaterThan(BinaryBooleanExpr):
+class NotEqualValue(NotEqual, FieldCompareValueExpr):
     final = True
-    key = '__gt__'
+    key = '__neq__'
+
+
+class NotEqualField(NotEqual, FieldCompareFieldExpr):
+    final = True
+    key = '__neqf__'
+
+
+class GreaterThan:
     operator_influx = '>'
     operator_mysql = '>'
     operator_mongo = '$gt'
@@ -506,9 +556,17 @@ class GreaterThan(BinaryBooleanExpr):
     operator_pluto = 'is more than'
 
 
-class GreaterThanOrEqual(BinaryBooleanExpr):
+class GreaterThanValue(GreaterThan, FieldCompareValueExpr):
     final = True
-    key = '__gte__'
+    key = '__gt__'
+
+
+class GreaterThanField(GreaterThan, FieldCompareFieldExpr):
+    final = True
+    key = '__gtf__'
+
+
+class GreaterThanOrEqual:
     operator_influx = '>='
     operator_mysql = '>='
     operator_mongo = '$gte'
@@ -516,9 +574,17 @@ class GreaterThanOrEqual(BinaryBooleanExpr):
     operator_pluto = 'is at least'
 
 
-class LessThan(BinaryBooleanExpr):
+class GreaterThanOrEqualValue(GreaterThanOrEqual, FieldCompareValueExpr):
     final = True
-    key = '__lt__'
+    key = '__gte__'
+
+
+class GreaterThanOrEqualField(GreaterThanOrEqual, FieldCompareFieldExpr):
+    final = True
+    key = '__gtef__'
+
+
+class LessThan:
     operator_influx = '<'
     operator_mysql = '<'
     operator_mongo = '$lt'
@@ -526,9 +592,17 @@ class LessThan(BinaryBooleanExpr):
     operator_pluto = 'is less than'
 
 
-class LessThanOrEqual(BinaryBooleanExpr):
+class LessThanValue(LessThan, FieldCompareValueExpr):
     final = True
-    key = '__lte__'
+    key = '__lt__'
+
+
+class LessThanField(LessThan, FieldCompareFieldExpr):
+    final = True
+    key = '__ltf__'
+
+
+class LessThanOrEqual:
     operator_influx = '<='
     operator_mysql = '<='
     operator_mongo = '$lte'
@@ -536,7 +610,17 @@ class LessThanOrEqual(BinaryBooleanExpr):
     operator_pluto = 'is at most'
 
 
-class MatchRegex(BinaryBooleanExpr):
+class LessThanOrEqualValue(LessThanOrEqual, FieldCompareValueExpr):
+    final = True
+    key = '__lte__'
+
+
+class LessThanOrEqualField(LessThanOrEqual, FieldCompareFieldExpr):
+    final = True
+    key = '__ltef__'
+
+
+class MatchRegex(FieldCompareValueExpr):
     final = True
     key = '__regex__'
     operator_influx = '=~'
@@ -550,7 +634,7 @@ class MatchRegex(BinaryBooleanExpr):
         return {self.left.to_query_mongo(): self.right.to_query_mongo()}
 
 
-class InverseMatchRegex(BinaryBooleanExpr):
+class InverseMatchRegex(FieldCompareValueExpr):
     final = True
     key = '__iregex__'
     operator_influx = '!~'
@@ -564,15 +648,9 @@ class InverseMatchRegex(BinaryBooleanExpr):
         return {self.left.to_query_mongo(): {'$not': self.right.to_query_mongo()}}
 
 
-class Null(BinaryBooleanExpr):
+class Null(FieldAssertionExpr):
     final = True
     key = '__null__'
-
-    def __init__(self, left: Union[SchemaLiteral, str], right: BooleanLiteral):
-        super().__init__(left, right)
-
-        if not isinstance(self.right, BooleanLiteral):
-            raise InvalidQuery('The operand of "{}" must be either true or false.'.format(self.key))
 
     def to_query_mysql(self) -> str:
         return '{} {}'.format(self.left.to_query_mysql(), 'is NULL' if self.right.literal else 'is NOT NULL')
@@ -587,18 +665,65 @@ class Null(BinaryBooleanExpr):
         return '{} {}'.format(self.left.to_query_pluto(), 'is null' if self.right.literal else 'is not null')
 
 
-class Missing(BinaryBooleanExpr):
+class Missing(FieldAssertionExpr):
     final = True
     key = '__missing__'
 
-    def __init__(self, left: Union[SchemaLiteral, str], right: BooleanLiteral):
-        super().__init__(left, right)
+    def to_query_mongo(self) -> JsonType:
+        return {self.left.to_query_mongo(): {'$exists': not self.right.literal}}
 
-        if not isinstance(self.right, BooleanLiteral):
-            raise InvalidQuery('The operand of "{}" must be either true or false.'.format(self.key))
+
+class FieldCompareListExpr(BinaryBooleanExpr):
+    def __init__(self, left: Union[SchemaLiteral, str], right: List[Union[LiteralExpr, JsonValueType]]):
+        super().__init__(left, right)
+        if not isinstance(self.right, list):
+            raise InvalidQuery('The operand of "{}" must be a list.'.format(self.key))
+        self.right = [LiteralExpr.from_json(e) for e in right]
+
+    def iter_sub_expr(self):
+        yield self.left
+        yield from self.right
+
+    def to_query_influx(self) -> str:
+        return self.equivalent_fallback_expr().to_query_influx()
+
+    def to_query_mysql(self) -> str:
+        return '{} {} ({})'.format(self.left.literal, self.operator_mysql,
+                                   ', '.join(e.to_query_mysql() for e in self.right))
 
     def to_query_mongo(self) -> JsonType:
-        return {self.left.to_query_mongo(): {'$exists': 1 if self.right.literal else -1}}
+        return {self.left.literal: {self.operator_mongo: [e.literal for e in self.right]}}
+
+    def to_query_pandas(self):
+        return self.equivalent_fallback_expr().to_query_pandas()
+
+    def to_query_pluto(self) -> str:
+        return self.equivalent_fallback_expr().to_query_influx()
+
+    def equivalent_fallback_expr(self):
+        raise NotImplementedError('No fallback equivalent exprs for {}'.format(self))
+
+
+class In(FieldCompareListExpr):
+    final = True
+    key = '__in__'
+
+    operator_mysql = 'IN'
+    operator_mongo = '$in'
+
+    def equivalent_fallback_expr(self):
+        return Or([EqualValue(self.left, e) for e in self.right])
+
+
+class NotIn(FieldCompareListExpr):
+    final = True
+    key = '__nin__'
+
+    operator_mysql = 'NOT IN'
+    operator_mongo = '$nin'
+
+    def equivalent_fallback_expr(self):
+        return And([NotEqualValue(self.left, e) for e in self.right])
 
 
 class LogicalExpr(BooleanExpr):
@@ -609,19 +734,29 @@ class LogicalExpr(BooleanExpr):
         self.exprs = [BooleanExpr.from_json(e) for e in exprs]
 
     def to_query_influx(self):
-        return ' {} '.format(self.operator_influx).join(sorted('(' + e.to_query_influx() + ')' for e in self.exprs))
+        if self.operator_influx is None:
+            raise NotImplementedError('generating InfluxQL from operator "{}" is not implemented'.format(self.key))
+        return ' {} '.format(self.operator_influx).join('(' + e.to_query_influx() + ')' for e in self.exprs)
 
     def to_query_mysql(self):
-        return ' {} '.format(self.operator_mysql).join(sorted('(' + e.to_query_mysql() + ')' for e in self.exprs))
+        if self.operator_mysql is None:
+            raise NotImplementedError('generating MySQL from operator "{}" is not implemented'.format(self.key))
+        return ' {} '.format(self.operator_mysql).join('(' + e.to_query_mysql() + ')' for e in self.exprs)
 
     def to_query_mongo(self) -> JsonType:
+        if self.operator_mongo is None:
+            raise NotImplementedError('generating MongoDB query from operator "{}" is not implemented'.format(self.key))
         return {self.operator_mongo: [e.to_query_mongo() for e in self.exprs]}
 
     def to_query_pandas(self) -> str:
-        return ' {} '.format(self.operator_pandas).join(sorted('(' + e.to_query_pandas() + ')' for e in self.exprs))
+        if self.operator_pandas is None:
+            raise NotImplementedError('generating pandas query from operator "{}" is not implemented'.format(self.key))
+        return ' {} '.format(self.operator_pandas).join('(' + e.to_query_pandas() + ')' for e in self.exprs)
 
     def to_query_pluto(self) -> str:
-        return ' {} '.format(self.operator_pluto).join(sorted('(' + e.to_query_pluto() + ')' for e in self.exprs))
+        if self.operator_pluto is None:
+            raise NotImplementedError('generating pluto conditions from operator "{}" is not implemented'.format(self.key))
+        return ' {} '.format(self.operator_pluto).join('(' + e.to_query_pluto() + ')' for e in self.exprs)
 
     def __repr__(self):
         return '{}({!r})'.format(type(self).__name__, self.exprs)
@@ -648,9 +783,7 @@ class And(LogicalExpr):
     operator_pluto = 'and'
 
 
-class Or(LogicalExpr):
-    final = True
-    key = '__or__'
+class Or_(LogicalExpr):
     operator_influx = 'OR'
     operator_mysql = 'OR'
     operator_mongo = '$or'
@@ -658,12 +791,18 @@ class Or(LogicalExpr):
     operator_pluto = 'or'
 
 
-class Any(LogicalExpr):
+class Or(Or_):
+    final = True
+    key = '__or__'
+
+
+class Any(Or_):
     final = True
     key = '__any__'
 
     def to_query_pluto(self):
-        return 'any of the following conditions is true :\n' + '\n'.join(sorted('      - ' + e.to_query_pluto() for e in self.exprs))
+        return 'any of the following conditions is true :\n' + \
+               '\n'.join(sorted('      - ' + e.to_query_pluto() for e in self.exprs))
 
 
 # Statement
@@ -790,4 +929,3 @@ class ShowColumns(Stmt):
             ql_from = ' FROM ' + self.table.to_query_mysql()
 
         return 'SHOW COLUMNS' + ql_from
-
