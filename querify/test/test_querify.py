@@ -394,6 +394,44 @@ def test_iter_exprs():
     assert len([e for e in all_sub_exprs if type(e) is NotIn]) == 1
 
 
+def test_filter():
+    expr = Expr.from_json({
+        'rule_id': [6666, '7777', 8888],
+        'act_type': {'__nin__': ['logging', 'eval']},
+        'expected_fire_volume': 10000,
+        'expected_fire_rate': 99.9,
+        'rule_owner': 'me',
+        'rule_writer': {'__neqf__': 'rule_owner',
+                        '__null__': False},
+        'last_modifier': {'__eqf__': 'rule_writer'},
+        '__or__': [
+            {
+                'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5),
+                              '__gt__': datetime(2014, 1, 1, 0, 0),
+                              '__eqf__': 'update_ts',
+                              '__ltf__': 'retire_ts'},
+                'version': {'__lt__': 3, '__gte__': 1},
+            },
+            {
+                'version': {'__eq__': 4},
+                'expected_fire_volume': {'__ltef__': 'expected_max_volume',
+                                         '__gtf__': 'expected_min_volume'},
+                'country': {'__in__': ['UK', 'DE']}
+            }
+        ],
+        '__and__': [
+            {'rule_name': '/logging_.*/'},
+            {'rule_name': {'__neq__': 'logging_rddms'}},
+            {'rule_name': {'__iregex__': 'logging_r..s'}}
+        ]
+    })
+
+    assert expr.filter(lambda e: e.key != '__eqf__', recursive=False).to_query_mysql() == \
+        """(rule_name REGEXP 'logging_.*') AND (rule_name <> 'logging_rddms') AND (rule_name NOT REGEXP 'logging_r..s') AND (((create_ts = update_ts) AND (create_ts > '2014-01-01 00:00:00') AND (create_ts <= '2015-12-31 12:05:00') AND (create_ts < retire_ts) AND (version >= 1) AND (version < 3)) OR ((country IN ('UK', 'DE')) AND (expected_fire_volume > expected_min_volume) AND (expected_fire_volume <= expected_max_volume) AND (version = 4))) AND (act_type NOT IN ('logging', 'eval')) AND (expected_fire_rate = 99.9) AND (expected_fire_volume = 10000) AND (rule_id IN (6666, '7777', 8888)) AND (rule_owner = 'me') AND (rule_writer <> rule_owner) AND (rule_writer is NOT NULL)"""
+    assert expr.filter(lambda e: e.key != '__eqf__', recursive=True).to_query_mysql() == \
+        """(rule_name REGEXP 'logging_.*') AND (rule_name <> 'logging_rddms') AND (rule_name NOT REGEXP 'logging_r..s') AND (((create_ts > '2014-01-01 00:00:00') AND (create_ts <= '2015-12-31 12:05:00') AND (create_ts < retire_ts) AND (version >= 1) AND (version < 3)) OR ((country IN ('UK', 'DE')) AND (expected_fire_volume > expected_min_volume) AND (expected_fire_volume <= expected_max_volume) AND (version = 4))) AND (act_type NOT IN ('logging', 'eval')) AND (expected_fire_rate = 99.9) AND (expected_fire_volume = 10000) AND (rule_id IN (6666, '7777', 8888)) AND (rule_owner = 'me') AND (rule_writer <> rule_owner) AND (rule_writer is NOT NULL)"""
+
+
 def test_select_stmt():
     query_json = {
         'rule_id': [6666, '7777', 8888],

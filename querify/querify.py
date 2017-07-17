@@ -474,7 +474,7 @@ class BinaryComparisonExpr(BinaryBooleanExpr):
         return '{} {} {}'.format(self.left.to_query_mysql(), self.operator_mysql, self.right.to_query_mysql())
 
     def to_query_mongo(self) -> JsonType:
-        if self.operator_mysql is None:
+        if self.operator_mongo is None:
             raise NotImplementedError('generating MongoDB query from operator "{}" is not implemented'.format(self.key))
         return {self.left.to_query_mongo(): {self.operator_mongo: self.right.to_query_mongo()}}
 
@@ -514,7 +514,6 @@ class FieldAssertionExpr(BinaryBooleanExpr):
 class Equal:
     operator_influx = '='
     operator_mysql = '='
-    operator_mongo = '$eq'
     operator_pandas = '=='
     operator_pluto = 'equals'
 
@@ -523,6 +522,8 @@ class Equal:
 class EqualValue(Equal, FieldCompareValueExpr):
     final = True
     key = '__eq__'
+
+    operator_mongo = '$eq'
 
 
 class EqualField(Equal, FieldCompareFieldExpr):
@@ -533,7 +534,6 @@ class EqualField(Equal, FieldCompareFieldExpr):
 class NotEqual:
     operator_influx = '!='
     operator_mysql = '<>'
-    operator_mongo = '$ne'
     operator_pandas = '!='
     operator_pluto = 'does not equal'
 
@@ -541,6 +541,8 @@ class NotEqual:
 class NotEqualValue(NotEqual, FieldCompareValueExpr):
     final = True
     key = '__neq__'
+
+    operator_mongo = '$ne'
 
 
 class NotEqualField(NotEqual, FieldCompareFieldExpr):
@@ -551,7 +553,6 @@ class NotEqualField(NotEqual, FieldCompareFieldExpr):
 class GreaterThan:
     operator_influx = '>'
     operator_mysql = '>'
-    operator_mongo = '$gt'
     operator_pandas = '>'
     operator_pluto = 'is more than'
 
@@ -559,6 +560,8 @@ class GreaterThan:
 class GreaterThanValue(GreaterThan, FieldCompareValueExpr):
     final = True
     key = '__gt__'
+
+    operator_mongo = '$gt'
 
 
 class GreaterThanField(GreaterThan, FieldCompareFieldExpr):
@@ -569,7 +572,6 @@ class GreaterThanField(GreaterThan, FieldCompareFieldExpr):
 class GreaterThanOrEqual:
     operator_influx = '>='
     operator_mysql = '>='
-    operator_mongo = '$gte'
     operator_pandas = '>='
     operator_pluto = 'is at least'
 
@@ -577,6 +579,8 @@ class GreaterThanOrEqual:
 class GreaterThanOrEqualValue(GreaterThanOrEqual, FieldCompareValueExpr):
     final = True
     key = '__gte__'
+
+    operator_mongo = '$gte'
 
 
 class GreaterThanOrEqualField(GreaterThanOrEqual, FieldCompareFieldExpr):
@@ -587,7 +591,6 @@ class GreaterThanOrEqualField(GreaterThanOrEqual, FieldCompareFieldExpr):
 class LessThan:
     operator_influx = '<'
     operator_mysql = '<'
-    operator_mongo = '$lt'
     operator_pandas = '<'
     operator_pluto = 'is less than'
 
@@ -595,6 +598,8 @@ class LessThan:
 class LessThanValue(LessThan, FieldCompareValueExpr):
     final = True
     key = '__lt__'
+
+    operator_mongo = '$lt'
 
 
 class LessThanField(LessThan, FieldCompareFieldExpr):
@@ -605,7 +610,6 @@ class LessThanField(LessThan, FieldCompareFieldExpr):
 class LessThanOrEqual:
     operator_influx = '<='
     operator_mysql = '<='
-    operator_mongo = '$lte'
     operator_pandas = '<='
     operator_pluto = 'is at most'
 
@@ -613,6 +617,8 @@ class LessThanOrEqual:
 class LessThanOrEqualValue(LessThanOrEqual, FieldCompareValueExpr):
     final = True
     key = '__lte__'
+
+    operator_mongo = '$lte'
 
 
 class LessThanOrEqualField(LessThanOrEqual, FieldCompareFieldExpr):
@@ -764,6 +770,11 @@ class LogicalExpr(BooleanExpr):
 
     def __len__(self):
         return len(self.exprs)
+
+    def filter(self, filter_fn, recursive=False):
+        filtered_exprs = [e.filter(filter_fn, recursive) if recursive and isinstance(e, LogicalExpr) else e
+                          for e in self.exprs if filter_fn(e)]
+        return type(self)(filtered_exprs)
 
     @classmethod
     def init_args_from_json(cls, json):
