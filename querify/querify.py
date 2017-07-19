@@ -337,6 +337,8 @@ class OperatorExpr(Expr):
             elif isinstance(tag_filter, list):
                 if tag == And.key:
                     exprs.extend(tag_filter)
+                elif tag == All.key:
+                    exprs.append({All.key: tag_filter})
                 elif tag == Or.key:
                     exprs.append({Or.key: tag_filter})
                 elif tag == Any.key:
@@ -704,7 +706,7 @@ class FieldCompareListExpr(BinaryBooleanExpr):
         return self.equivalent_fallback_expr().to_query_pandas()
 
     def to_query_pluto(self) -> str:
-        return self.equivalent_fallback_expr().to_query_influx()
+        return self.equivalent_fallback_expr().to_query_pluto()
 
     def equivalent_fallback_expr(self):
         raise NotImplementedError('No fallback equivalent exprs for {}'.format(self))
@@ -788,14 +790,26 @@ class LogicalExpr(BooleanExpr):
         yield from self.exprs
 
 
-class And(LogicalExpr):
-    final = True
-    key = '__and__'
+class And_(LogicalExpr):
     operator_influx = 'AND'
     operator_mysql = 'AND'
     operator_mongo = '$and'
     operator_pandas = '&'
     operator_pluto = 'and'
+
+
+class And(And_):
+    final = True
+    key = '__and__'
+
+
+class All(And_):
+    final = True
+    key = '__all__'
+
+    def to_query_pluto(self):
+        return 'all of the following conditions are true :\n' + \
+               '\n'.join(sorted('      - ' + e.to_query_pluto() for e in self.exprs))
 
 
 class Or_(LogicalExpr):

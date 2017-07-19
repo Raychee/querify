@@ -614,4 +614,32 @@ def test_pluto():
       - (inconsistency does not equal "low") and (latency is at least 3.2)
       - (inconsistency does not equal "low") and (latency is less than 3.2)
       - (inconsistency equals "low") and ((latency is at most -1) or (latency is more than 100))"""
-    print(result)
+
+    query_json = {
+        "__all__": [
+            {"__and__": [
+                {"inconsistency": {"__neq__": "low"}},
+                {"latency": {"__lt__": 3.2}}
+            ]},
+            {"__and__": [
+                {"inconsistency": {"__neq__": "low"}},
+                {"latency": {"__gte__": 3.2}}
+            ]},
+            {"__and__": [
+                {"inconsistency": {"__eq__": "low"}},
+                {"__or__": [
+                    {"latency": {"__lte__": -1}},
+                    {"latency": {"__gt__": 100}}
+                ]}
+            ]}
+        ]
+    }
+
+    expr = Expr.from_json(query_json)
+    result = expr.to_query_pluto()
+
+    assert result == \
+        """all of the following conditions are true :
+      - (inconsistency does not equal "low") and (latency is at least 3.2)
+      - (inconsistency does not equal "low") and (latency is less than 3.2)
+      - (inconsistency equals "low") and ((latency is at most -1) or (latency is more than 100))"""
