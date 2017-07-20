@@ -92,6 +92,9 @@ class Query:
             raise NotImplementedError('generating {} from {!r} is not supported'.format(type, self))
         return method()
 
+    def to_query_json(self) -> str:
+        raise NotImplementedError('generating json from {!r} is not implemented'.format(self))
+
     def to_query_influx(self) -> str:
         raise NotImplementedError('generating InfluxQL from {!r} is not implemented'.format(self))
 
@@ -174,6 +177,9 @@ class StringLiteral(LiteralExpr):
     final = True
     key = str
 
+    def to_query_json(self) -> JsonType:
+        return self.literal
+
     def to_query_influx(self) -> str:
         return "'{}'".format(self.literal)
 
@@ -194,6 +200,9 @@ class BooleanLiteral(LiteralExpr):
     final = True
     key = bool
 
+    def to_query_json(self) -> JsonType:
+        return self.literal
+
     def to_query_influx(self) -> str:
         return repr(self.literal)
 
@@ -210,6 +219,9 @@ class BooleanLiteral(LiteralExpr):
 class IntLiteral(LiteralExpr):
     final = True
     key = int
+
+    def to_query_json(self) -> JsonType:
+        return self.literal
 
     def to_query_influx(self) -> str:
         return repr(self.literal)
@@ -231,6 +243,9 @@ class FloatLiteral(LiteralExpr):
     final = True
     key = float
 
+    def to_query_json(self) -> JsonType:
+        return self.literal
+
     def to_query_influx(self) -> str:
         return repr(self.literal)
 
@@ -250,6 +265,9 @@ class FloatLiteral(LiteralExpr):
 class DateTimeLiteral(LiteralExpr):
     final = True
     key = datetime
+
+    def to_query_json(self) -> JsonType:
+        return self.literal
 
     def to_query_influx(self) -> str:
         return "'{:%Y-%m-%dT%H:%M:%SZ}'".format(self.literal)
@@ -271,6 +289,9 @@ class RegexLiteral(LiteralExpr):
     @classmethod
     def cls_keys_from_json(cls, json):
         yield 'regex'
+
+    def to_query_json(self) -> JsonType:
+        return self.literal
 
     def to_query_influx(self) -> str:
         return '/{}/'.format(self.literal)
@@ -295,6 +316,9 @@ class SchemaLiteral(LiteralExpr):
     @classmethod
     def cls_keys_from_json(cls, json):
         yield 'schema'
+
+    def to_query_json(self) -> JsonType:
+        return self.literal
 
     def to_query_influx(self) -> str:
         return '"{}"'.format(self.literal)
@@ -423,6 +447,9 @@ class Not(UnaryBooleanExpr):
     operator_pandas = '~'
     operator_pluto = 'it is not true that'
 
+    def to_query_json(self) -> JsonType:
+        return {self.key: self.operand.to_query_json()}
+
     # def to_query_influx(self):
     #     return '{} {}'.format(self.operator_influx, self.operand.to_query_influx())
 
@@ -465,6 +492,11 @@ class BinaryComparisonExpr(BinaryBooleanExpr):
         yield self.left
         yield self.right
 
+    def to_query_json(self) -> JsonType:
+        if self.key is None:
+            raise NotImplementedError('generating json from operator "{}" is not implemented'.format(self.key))
+        return {self.left.to_query_json(): {self.key: self.right.to_query_json()}}
+
     def to_query_influx(self):
         if self.operator_influx is None:
             raise NotImplementedError('generating InfluxQL from operator "{}" is not implemented'.format(self.key))
@@ -505,7 +537,7 @@ class FieldCompareFieldExpr(BinaryComparisonExpr):
         self.right = SchemaLiteral.from_json(right)
 
 
-class FieldAssertionExpr(BinaryBooleanExpr):
+class FieldAssertionExpr(BinaryComparisonExpr):
     def __init__(self, left: Union[SchemaLiteral, str], right: Union[BooleanLiteral, bool]):
         super().__init__(left, right)
         if not isinstance(self.right, (BooleanLiteral, bool)):
@@ -692,15 +724,18 @@ class FieldCompareListExpr(BinaryBooleanExpr):
         yield self.left
         yield from self.right
 
+    def to_query_json(self) -> JsonType:
+        return {self.left.to_query_json(): {self.key: [e.to_query_json() for e in self.right]}}
+
     def to_query_influx(self) -> str:
         return self.equivalent_fallback_expr().to_query_influx()
 
     def to_query_mysql(self) -> str:
-        return '{} {} ({})'.format(self.left.literal, self.operator_mysql,
+        return '{} {} ({})'.format(self.left.to_query_mysql(), self.operator_mysql,
                                    ', '.join(e.to_query_mysql() for e in self.right))
 
     def to_query_mongo(self) -> JsonType:
-        return {self.left.literal: {self.operator_mongo: [e.literal for e in self.right]}}
+        return {self.left.to_query_mongo(): {self.operator_mongo: [e.to_query_mongo() for e in self.right]}}
 
     def to_query_pandas(self):
         return self.equivalent_fallback_expr().to_query_pandas()
@@ -741,6 +776,11 @@ class LogicalExpr(BooleanExpr):
             raise InvalidQuery('The "{}" operator is not applied on a list.'.format(self.key))
         exprs = (BooleanExpr.from_json(e) for e in exprs)
         self.exprs = [e for e in exprs if isinstance(e, LogicalExpr) and len(e) > 0 or not isinstance(e, LogicalExpr)]
+
+    def to_query_json(self) -> JsonType:
+        if self.key is None:
+            raise NotImplementedError('generating json from operator "{}" is not implemented'.format(self.key))
+        return {self.key: [e.to_query_json() for e in self.exprs]}
 
     def to_query_influx(self):
         if self.operator_influx is None:
@@ -809,7 +849,7 @@ class All(And_):
 
     def to_query_pluto(self):
         return 'all of the following conditions are true :\n' + \
-               '\n'.join(sorted('      - ' + e.to_query_pluto() for e in self.exprs))
+               '\n'.join(sorted('      - (' + e.to_query_pluto() + ')' for e in self.exprs))
 
 
 class Or_(LogicalExpr):
@@ -831,7 +871,7 @@ class Any(Or_):
 
     def to_query_pluto(self):
         return 'any of the following conditions is true :\n' + \
-               '\n'.join(sorted('      - ' + e.to_query_pluto() for e in self.exprs))
+               '\n'.join(sorted('      - (' + e.to_query_pluto() + ')' for e in self.exprs))
 
 
 # Statement

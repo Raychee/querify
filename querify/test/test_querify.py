@@ -57,59 +57,70 @@ def test_meta_class():
     assert deep_equal(E.subclasses, {'E1': E1})
 
 
-# def test_normalize_query_json():
-#     metric_filter = {
-#         'rule_id': [6666, '7777', 8888],
-#         'act_type': 'logging',
-#         'expected_fire_volume': 10000,
-#         'expected_fire_rate': 99.9,
-#         '__or__': [
-#             {
-#                 'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5),
-#                               '__gt__': datetime(2014, 1, 1, 0, 0)},
-#                 'version': {'__lt__': 3, '__gte__': 1},
-#             },
-#             {'version': {'__eq__': 4}}
-#         ],
-#         '__and__': [
-#             {'rule_name': '/logging_.*/'},
-#             {'rule_name': {'__neq__': 'logging_rddms'}},
-#             {'rule_name': {'__iregex__': 'logging_r..s'}}
-#         ]
-#     }
-#
-#     expr_dict = BooleanExpr.normalize_eval_expr_dict(metric_filter)
-#     expected_expr_dict = {
-#         '__and__': [
-#             {
-#                 '__or__': [
-#                     {'rule_id': {'__eq__': 6666}},
-#                     {'rule_id': {'__eq__': '7777'}},
-#                     {'rule_id': {'__eq__': 8888}}
-#                 ]
-#             },
-#             {'act_type': {'__eq__': 'logging'}},
-#             {'expected_fire_volume': {'__eq__': 10000}},
-#             {'expected_fire_rate': {'__eq__': 99.9}},
-#             {
-#                 '__or__': [
-#                     {
-#                         '__and__': [
-#                             {'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5)}},
-#                             {'create_ts': {'__gt__': datetime(2014, 1, 1, 0, 0)}},
-#                             {'version': {'__lt__': 3}},
-#                             {'version': {'__gte__': 1}},
-#                         ]
-#                     },
-#                     {'version': {'__eq__': 4}}
-#                 ]
-#             },
-#             {'rule_name': {'__regex__': 'logging_.*'}},
-#             {'rule_name': {'__neq__': 'logging_rddms'}},
-#             {'rule_name': {'__iregex__': 'logging_r..s'}}
-#         ]
-#     }
-#     assert deep_equal(expr_dict, expected_expr_dict, unordered_list=True)
+def test_normalize_query_json():
+    query_json = {
+        'rule_id': [6666, '7777', 8888],
+        'act_type': {'__nin__': ['logging', 'eval']},
+        'expected_fire_volume': 10000,
+        'expected_fire_rate': 99.9,
+        'rule_owner': 'me',
+        'rule_writer': {'__neqf__': 'rule_owner',
+                        '__null__': False},
+        'last_modifier': {'__eqf__': 'rule_writer'},
+        '__or__': [
+            {
+                'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5),
+                              '__gt__': datetime(2014, 1, 1, 0, 0),
+                              '__gtef__': 'update_ts',
+                              '__ltf__': 'retire_ts'},
+                'version': {'__lt__': 3, '__gte__': 1},
+            },
+            {
+                'version': {'__eq__': 4},
+                'expected_fire_volume': {'__ltef__': 'expected_max_volume',
+                                         '__gtf__': 'expected_min_volume'},
+                'country': {'__in__': ['UK', 'DE']}
+            }
+        ],
+        '__and__': [
+            {'rule_name': '/logging_.*/'},
+            {'rule_name': {'__neq__': 'logging_rddms'}},
+            {'rule_name': {'__iregex__': 'logging_r..s'}}
+        ]
+    }
+
+    expr = Expr.from_json(query_json)
+
+    assert deep_equal(expr.to_query('json'), {
+        '__and__': [
+            {'rule_name': {'__regex__': 'logging_.*'}},
+            {'rule_name': {'__neq__': 'logging_rddms'}},
+            {'rule_name': {'__iregex__': 'logging_r..s'}},
+            {'__or__': [
+                {'__and__': [
+                    {'create_ts': {'__gt__': datetime(2014, 1, 1, 0, 0)}},
+                    {'create_ts': {'__gtef__': 'update_ts'}},
+                    {'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5)}},
+                    {'create_ts': {'__ltf__': 'retire_ts'}},
+                    {'version': {'__gte__': 1}},
+                    {'version': {'__lt__': 3}}
+                ]},
+                {'__and__': [
+                    {'country': {'__in__': ['UK', 'DE']}},
+                    {'expected_fire_volume': {'__gtf__': 'expected_min_volume'}},
+                    {'expected_fire_volume': {'__ltef__': 'expected_max_volume'}},
+                    {'version': {'__eq__': 4}}
+                ]}
+            ]},
+            {'act_type': {'__nin__': ['logging', 'eval']}},
+            {'expected_fire_rate': {'__eq__': 99.9}},
+            {'expected_fire_volume': {'__eq__': 10000}},
+            {'last_modifier': {'__eqf__': 'rule_writer'}},
+            {'rule_id': {'__in__': [6666, '7777', 8888]}},
+            {'rule_owner': {'__eq__': 'me'}},
+            {'rule_writer': {'__neqf__': 'rule_owner'}},
+            {'rule_writer': {'__null__': False}}
+        ]}, unordered_list=True)
 
 
 def test_empty_query():
@@ -329,7 +340,7 @@ def test_generate_query_for_pluto():
 
     expr = Expr.from_json(query_json)
     assert expr.to_query('pluto') == \
-        """(rule_name does not equal "logging_rddms") and (((create_ts is at least update_ts) and (create_ts is less than retire_ts) and (version is at least 1) and (version is less than 3)) or ((("country" = 'UK') OR ("country" = 'DE')) and (expected_fire_volume is more than expected_min_volume) and (expected_fire_volume is at most expected_max_volume) and (version equals 4))) and (("act_type" != 'logging') AND ("act_type" != 'eval')) and (expected_fire_rate equals 99.9) and (expected_fire_volume equals 10000) and (last_modifier equals rule_writer) and (("rule_id" = 6666) OR ("rule_id" = '7777') OR ("rule_id" = 8888)) and (rule_owner equals "me") and (rule_writer does not equal rule_owner) and (rule_writer is not null)"""
+        """(rule_name does not equal "logging_rddms") and (((create_ts is at least update_ts) and (create_ts is less than retire_ts) and (version is at least 1) and (version is less than 3)) or (((country equals "UK") or (country equals "DE")) and (expected_fire_volume is more than expected_min_volume) and (expected_fire_volume is at most expected_max_volume) and (version equals 4))) and ((act_type does not equal "logging") and (act_type does not equal "eval")) and (expected_fire_rate equals 99.9) and (expected_fire_volume equals 10000) and (last_modifier equals rule_writer) and ((rule_id equals 6666) or (rule_id equals "7777") or (rule_id equals 8888)) and (rule_owner equals "me") and (rule_writer does not equal rule_owner) and (rule_writer is not null)"""
 
 
 def test_iter_exprs():
@@ -366,7 +377,7 @@ def test_iter_exprs():
 
     expr = Expr.from_json(query_json)
     all_sub_exprs = list(expr)
-    assert len(all_sub_exprs) == 69
+    assert len(all_sub_exprs) == 71
     assert len([e for e in all_sub_exprs if type(e) is And]) == 3
     assert len([e for e in all_sub_exprs if type(e) is Or]) == 1
     assert len([e for e in all_sub_exprs if type(e) is EqualValue]) == 4
@@ -378,7 +389,7 @@ def test_iter_exprs():
     assert len([e for e in all_sub_exprs if type(e) is FloatLiteral]) == 1
     assert len([e for e in all_sub_exprs if type(e) is DateTimeLiteral]) == 2
     assert len([e for e in all_sub_exprs if type(e) is RegexLiteral]) == 2
-    assert len([e for e in all_sub_exprs if type(e) is SchemaLiteral]) == 26
+    assert len([e for e in all_sub_exprs if type(e) is SchemaLiteral]) == 27
     assert len([e for e in all_sub_exprs if type(e) is MatchRegex]) == 1
     assert len([e for e in all_sub_exprs if type(e) is InverseMatchRegex]) == 1
     assert len([e for e in all_sub_exprs if type(e) is GreaterThanValue]) == 1
@@ -611,9 +622,9 @@ def test_pluto():
 
     assert result == \
         """any of the following conditions is true :
-      - (inconsistency does not equal "low") and (latency is at least 3.2)
-      - (inconsistency does not equal "low") and (latency is less than 3.2)
-      - (inconsistency equals "low") and ((latency is at most -1) or (latency is more than 100))"""
+      - ((inconsistency does not equal "low") and (latency is at least 3.2))
+      - ((inconsistency does not equal "low") and (latency is less than 3.2))
+      - ((inconsistency equals "low") and ((latency is at most -1) or (latency is more than 100)))"""
 
     query_json = {
         "__all__": [
@@ -640,6 +651,6 @@ def test_pluto():
 
     assert result == \
         """all of the following conditions are true :
-      - (inconsistency does not equal "low") and (latency is at least 3.2)
-      - (inconsistency does not equal "low") and (latency is less than 3.2)
-      - (inconsistency equals "low") and ((latency is at most -1) or (latency is more than 100))"""
+      - ((inconsistency does not equal "low") and (latency is at least 3.2))
+      - ((inconsistency does not equal "low") and (latency is less than 3.2))
+      - ((inconsistency equals "low") and ((latency is at most -1) or (latency is more than 100)))"""
