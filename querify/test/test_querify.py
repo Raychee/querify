@@ -6,7 +6,7 @@ from ..querify import Expr, And, SchemaLiteral, RegexLiteral, IntLiteral, MatchR
     Or, DateTimeLiteral, \
     FloatLiteral, ClassFromJsonWithSubclassDictMeta, Select, ShowTagKeys, ShowColumns, EqualValue, NotEqualValue, \
     GreaterThanValue, GreaterThanOrEqualValue, LessThanValue, LessThanOrEqualValue, EqualField, NotEqualField, \
-    GreaterThanField, GreaterThanOrEqualField, LessThanField, LessThanOrEqualField, Null, In, NotIn
+    GreaterThanField, GreaterThanOrEqualField, LessThanField, LessThanOrEqualField, Null, In, NotIn, BinaryBooleanExpr
 from ..utility import deep_equal
 
 
@@ -441,6 +441,101 @@ def test_filter():
         """(rule_name REGEXP 'logging_.*') AND (rule_name <> 'logging_rddms') AND (rule_name NOT REGEXP 'logging_r..s') AND (((create_ts = update_ts) AND (create_ts > '2014-01-01 00:00:00') AND (create_ts <= '2015-12-31 12:05:00') AND (create_ts < retire_ts) AND (version >= 1) AND (version < 3)) OR ((country IN ('UK', 'DE')) AND (expected_fire_volume > expected_min_volume) AND (expected_fire_volume <= expected_max_volume) AND (version = 4))) AND (act_type NOT IN ('logging', 'eval')) AND (expected_fire_rate = 99.9) AND (expected_fire_volume = 10000) AND (rule_id IN (6666, '7777', 8888)) AND (rule_owner = 'me') AND (rule_writer <> rule_owner) AND (rule_writer is NOT NULL)"""
     assert expr.filter(lambda e: e.key != '__eqf__', recursive=True).to_query_mysql() == \
         """(rule_name REGEXP 'logging_.*') AND (rule_name <> 'logging_rddms') AND (rule_name NOT REGEXP 'logging_r..s') AND (((create_ts > '2014-01-01 00:00:00') AND (create_ts <= '2015-12-31 12:05:00') AND (create_ts < retire_ts) AND (version >= 1) AND (version < 3)) OR ((country IN ('UK', 'DE')) AND (expected_fire_volume > expected_min_volume) AND (expected_fire_volume <= expected_max_volume) AND (version = 4))) AND (act_type NOT IN ('logging', 'eval')) AND (expected_fire_rate = 99.9) AND (expected_fire_volume = 10000) AND (rule_id IN (6666, '7777', 8888)) AND (rule_owner = 'me') AND (rule_writer <> rule_owner) AND (rule_writer is NOT NULL)"""
+
+
+def test_map():
+    expr = Expr.from_json({
+        'rule_id': [6666, '7777', 8888],
+        'act_type': {'__nin__': ['logging', 'eval']},
+        'expected_fire_volume': 10000,
+        'expected_fire_rate': 99.9,
+        'rule_owner': 'me',
+        'rule_writer': {'__neqf__': 'rule_owner',
+                        '__null__': False},
+        'last_modifier': {'__eqf__': 'rule_writer'},
+        '__or__': [
+            {
+                'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5),
+                              '__gt__': datetime(2014, 1, 1, 0, 0),
+                              '__eqf__': 'update_ts',
+                              '__ltf__': 'retire_ts'},
+                'version': {'__lt__': 3, '__gte__': 1},
+            },
+            {
+                'version': {'__eq__': 4},
+                'expected_fire_volume': {'__ltef__': 'expected_max_volume',
+                                         '__gtf__': 'expected_min_volume'},
+                'country': {'__in__': ['UK', 'DE']}
+            }
+        ],
+        '__and__': [
+            {'rule_name': '/logging_.*/'},
+            {'rule_name': {'__neq__': 'logging_rddms'}},
+            {'rule_name': {'__iregex__': 'logging_r..s'}}
+        ]
+    })
+
+    assert deep_equal(expr.map(lambda e: type(e)('<replaced>', e.right) if isinstance(e, BinaryBooleanExpr) else e, recursive=False).to_query('json'), {
+        '__and__': [
+            {'<replaced>': {'__regex__': 'logging_.*'}},
+            {'<replaced>': {'__neq__': 'logging_rddms'}},
+            {'<replaced>': {'__iregex__': 'logging_r..s'}},
+            {'__or__': [
+                {'__and__': [
+                    {'create_ts': {'__eqf__': 'update_ts'}},
+                    {'create_ts': {'__gt__': datetime(2014, 1, 1, 0, 0)}},
+                    {'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5)}},
+                    {'create_ts': {'__ltf__': 'retire_ts'}},
+                    {'version': {'__gte__': 1}},
+                    {'version': {'__lt__': 3}}
+                ]},
+                {'__and__': [
+                    {'country': {'__in__': ['UK', 'DE']}},
+                    {'expected_fire_volume': {'__gtf__': 'expected_min_volume'}},
+                    {'expected_fire_volume': {'__ltef__': 'expected_max_volume'}},
+                    {'version': {'__eq__': 4}}
+                ]}
+            ]},
+            {'<replaced>': {'__nin__': ['logging', 'eval']}},
+            {'<replaced>': {'__eq__': 99.9}},
+            {'<replaced>': {'__eq__': 10000}},
+            {'<replaced>': {'__eqf__': 'rule_writer'}},
+            {'<replaced>': {'__in__': [6666, '7777', 8888]}},
+            {'<replaced>': {'__eq__': 'me'}},
+            {'<replaced>': {'__neqf__': 'rule_owner'}},
+            {'<replaced>': {'__null__': False}}
+        ]}, unordered_list=True)
+
+    assert deep_equal(expr.map(lambda e: type(e)('<replaced>', e.right) if isinstance(e, BinaryBooleanExpr) else e, recursive=True).to_query('json'), {
+        '__and__': [
+            {'<replaced>': {'__regex__': 'logging_.*'}},
+            {'<replaced>': {'__neq__': 'logging_rddms'}},
+            {'<replaced>': {'__iregex__': 'logging_r..s'}},
+            {'__or__': [
+                {'__and__': [
+                    {'<replaced>': {'__eqf__': 'update_ts'}},
+                    {'<replaced>': {'__gt__': datetime(2014, 1, 1, 0, 0)}},
+                    {'<replaced>': {'__lte__': datetime(2015, 12, 31, 12, 5)}},
+                    {'<replaced>': {'__ltf__': 'retire_ts'}},
+                    {'<replaced>': {'__gte__': 1}},
+                    {'<replaced>': {'__lt__': 3}}
+                ]},
+                {'__and__': [
+                    {'<replaced>': {'__in__': ['UK', 'DE']}},
+                    {'<replaced>': {'__gtf__': 'expected_min_volume'}},
+                    {'<replaced>': {'__ltef__': 'expected_max_volume'}},
+                    {'<replaced>': {'__eq__': 4}}
+                ]}
+            ]},
+            {'<replaced>': {'__nin__': ['logging', 'eval']}},
+            {'<replaced>': {'__eq__': 99.9}},
+            {'<replaced>': {'__eq__': 10000}},
+            {'<replaced>': {'__eqf__': 'rule_writer'}},
+            {'<replaced>': {'__in__': [6666, '7777', 8888]}},
+            {'<replaced>': {'__eq__': 'me'}},
+            {'<replaced>': {'__neqf__': 'rule_owner'}},
+            {'<replaced>': {'__null__': False}}
+        ]}, unordered_list=True)
 
 
 def test_select_stmt():

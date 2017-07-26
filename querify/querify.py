@@ -818,6 +818,21 @@ class LogicalExpr(BooleanExpr):
                           for e in self.exprs if filter_fn(e)]
         return type(self)(filtered_exprs)
 
+    def map(self, map_fn, recursive=False):
+        # recursive map will traverse all the expr nodes down the tree, including LogicalExprs.
+        # When encounter a LogicalExpr, the map_fn will also be invoked on the node,
+        # and if map_fn returns the node itself, the recursion starting from this node will still be proceeded.
+        # Otherwise the node will be mapped to a new node, and no recursion from this new node will be procedded.
+
+        def _map(expr):
+            mapped_expr = map_fn(expr)
+            if recursive and isinstance(expr, LogicalExpr):
+                if mapped_expr is expr:
+                    mapped_expr = type(mapped_expr)([_map(e) for e in mapped_expr.exprs])
+            return mapped_expr
+
+        return type(self)([_map(e) for e in self.exprs])
+
     @classmethod
     def init_args_from_json(cls, json):
         try:
