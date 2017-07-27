@@ -81,7 +81,7 @@ Ex: `{__not__: {a: {__gt__: 5}}` (Equivalence: `{a: {__lte__: 5}`)
 
 
 ### Advanced Usage
-The code should pretty much self-explanatory.
+The code should be pretty much self-explanatory.
 Please refer to the [test cases](https://github.com/Raychee/querify/blob/master/querify/test/test_querify.py) in the repo and see if something interests you. :)
 
 
@@ -94,6 +94,6 @@ Please refer to the [test cases](https://github.com/Raychee/querify/blob/master/
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](https://github.com/Raychee/querify/blob/master/LICENSE) file for details
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/Raychee/querify/blob/master/LICENSE) file for details.
 
 
