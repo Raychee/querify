@@ -8,7 +8,7 @@ The json structure is very much like mongodb query objects,
 making it easy to pick up quickly for users that have relevant experience.
 
 
-### Installing
+### Installation
 
 ```
 pip install querify
@@ -62,7 +62,7 @@ Assert that a variable does not match a regular expression. Ex: `{a: {__iregex__
 - `__null__`  
 Assert that a variable is null or not. Ex: `{a: {__null__: true}}`
 - `__in__`  
-Assert that a variable's value equals to one of the values in a list. Ex: `{a: {__in__: ["A", "B"]}}`
+Assert that a variable's value equals to one of the values in a list. Ex: `{a: {__in__: ["A", "B"]}}` (Abbreviation: `{a: ["A", "B"]}`)
 - `__nin__`  
 Assert that a variable's value does not equal to any of the values in a list. Ex: `{a: {__nin__: ["A", "B"]}}`
 
@@ -83,6 +83,8 @@ Ex: `{__not__: {a: {__gt__: 5}}` (Equivalence: `{a: {__lte__: 5}`)
 ### Advanced Usage
 The code should be pretty much self-explanatory.
 Please refer to the [test cases](https://github.com/Raychee/querify/blob/master/querify/test/test_querify.py) in the repo and see if something interests you. :)
+
+BTW, welcome for any PRs that make this package more powerful!
 
 
 ## Authors
