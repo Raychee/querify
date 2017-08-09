@@ -1,7 +1,7 @@
 from distutils.core import setup
 
 
-VERSION = '0.0.9'
+VERSION = '0.0.10'
 
 
 setup(
@@ -13,5 +13,8 @@ setup(
     author_email='raychee.zhang@gmail.com',
     url='https://github.com/Raychee/querify',
     download_url='https://github.com/Raychee/querify/tarball/' + VERSION,
-    keywords=['json', 'mongo', 'influx', 'mysql']
+    keywords=['json', 'mongo', 'influx', 'mysql'],
+    install_requires=[
+        'qutils>=0.3.0'
+    ]
 )

@@ -2,6 +2,8 @@ import re
 from datetime import datetime
 from typing import Union, Dict, Optional, Any, List
 
+from qutils.models import AttrRef, ItemRef
+
 from .errors import InvalidQuery, UnrecognizedExprType, UnrecognizedJsonableClass
 
 
@@ -128,6 +130,36 @@ class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
                                .format(json, cls.__name__, type(expr).__name__, expr))
         return expr
 
+    def __iter__(self):
+        return self.iter_expr()
+
+    def map(self, map_fn=lambda e: e):
+        """
+        Expr.map will traverse all the nodes down the expr tree and apply map_fn on them respectively.
+        If the map_fn returns None or the node itself, the recursive traverse starting from this node continues,
+        and otherwise don't.
+        """
+        self_ = map_fn(self)
+        if self_ is None or self_ is self:
+            for sub_expr_ref in self.iter_sub_expr_ref():
+                sub_expr_ = sub_expr_ref.v.map(map_fn)
+                sub_expr_ref.v = sub_expr_
+        return self_
+
+    def filter(self, filter_fn=lambda e: True):
+        """
+        Expr.filter will traverse all the nodes down the expr tree and prune those to which filter_fn returns False.
+        By default, a node will be eliminated entirely (replaced with And([])) if any of its descendants is Falsy
+        indicated by filter_fn. Only the LogicalExprs (whose map method is overridden below) will only eliminate those
+        nodes in their expr list according to filter_fn's results, and return the same LogicalExpr but with a shortened
+        list of sub exprs.
+        """
+        if filter_fn(self):
+            filtered_sub_exprs = (sub_expr_ref.v.filter(filter_fn) for sub_expr_ref in self.iter_sub_expr_ref())
+            if not any(isinstance(e, And) and len(e) == 0 for e in filtered_sub_exprs):
+                return self
+        return And([])
+
     @classmethod
     def cls_keys_from_json(cls, json: JsonType):
         if isinstance(json, dict):
@@ -135,15 +167,12 @@ class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
         else:
             yield 'literal'
 
-    def __iter__(self):
-        return self.iter_expr()
-
     def iter_expr(self):
         yield self
-        for sub_expr in self.iter_sub_expr():
-            yield from sub_expr.iter_expr()
+        for sub_expr_ref in self.iter_sub_expr_ref():
+            yield from sub_expr_ref.v.iter_expr()
 
-    def iter_sub_expr(self):
+    def iter_sub_expr_ref(self):
         return; yield
 
 
@@ -431,8 +460,8 @@ class UnaryBooleanExpr(BooleanExpr):
         except StopIteration:
             pass
 
-    def iter_sub_expr(self):
-        yield self.operand
+    def iter_sub_expr_ref(self):
+        yield AttrRef(self, 'operand')
 
     def __repr__(self):
         return '{}(operand={})'.format(type(self).__name__, self.operand)
@@ -488,9 +517,9 @@ class BinaryBooleanExpr(BooleanExpr):
 
 
 class BinaryComparisonExpr(BinaryBooleanExpr):
-    def iter_sub_expr(self):
-        yield self.left
-        yield self.right
+    def iter_sub_expr_ref(self):
+        yield AttrRef(self, 'left')
+        yield AttrRef(self, 'right')
 
     def to_query_json(self) -> JsonType:
         if self.key is None:
@@ -720,9 +749,10 @@ class FieldCompareListExpr(BinaryBooleanExpr):
             raise InvalidQuery('The operand of "{}" must be a list.'.format(self.key))
         self.right = [LiteralExpr.from_json(e) for e in right]
 
-    def iter_sub_expr(self):
-        yield self.left
-        yield from self.right
+    def iter_sub_expr_ref(self):
+        yield AttrRef(self, 'left')
+        for i, expr in enumerate(self.right):
+            yield ItemRef(self.right, i)
 
     def to_query_json(self) -> JsonType:
         return {self.left.to_query_json(): {self.key: [e.to_query_json() for e in self.right]}}
@@ -813,25 +843,12 @@ class LogicalExpr(BooleanExpr):
     def __len__(self):
         return len(self.exprs)
 
-    def filter(self, filter_fn, recursive=False):
-        filtered_exprs = [e.filter(filter_fn, recursive) if recursive and isinstance(e, LogicalExpr) else e
-                          for e in self.exprs if filter_fn(e)]
-        return type(self)(filtered_exprs)
-
-    def map(self, map_fn, recursive=False):
-        # recursive map will traverse all the expr nodes down the tree, including LogicalExprs.
-        # When encounter a LogicalExpr, the map_fn will also be invoked on the node,
-        # and if map_fn returns the node itself, the recursion starting from this node will still be proceeded.
-        # Otherwise the node will be mapped to a new node, and no recursion from this new node will be procedded.
-
-        def _map(expr):
-            mapped_expr = map_fn(expr)
-            if recursive and isinstance(expr, LogicalExpr):
-                if mapped_expr is expr:
-                    mapped_expr = type(mapped_expr)([_map(e) for e in mapped_expr.exprs])
-            return mapped_expr
-
-        return type(self)([_map(e) for e in self.exprs])
+    def filter(self, filter_fn=lambda e: True):
+        if filter_fn(self):
+            filtered_sub_exprs = (sub_expr.filter(filter_fn) for sub_expr in self.exprs)
+            filtered_sub_exprs = [e for e in filtered_sub_exprs if not (isinstance(e, And) and len(e) == 0)]
+            return type(self)(filtered_sub_exprs)
+        return And([])
 
     @classmethod
     def init_args_from_json(cls, json):
@@ -841,8 +858,9 @@ class LogicalExpr(BooleanExpr):
         except StopIteration:
             pass
 
-    def iter_sub_expr(self):
-        yield from self.exprs
+    def iter_sub_expr_ref(self):
+        for i, expr in enumerate(self.exprs):
+            yield ItemRef(self.exprs, i)
 
 
 class And_(LogicalExpr):

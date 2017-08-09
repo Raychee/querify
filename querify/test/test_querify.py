@@ -7,7 +7,7 @@ from ..querify import Expr, And, SchemaLiteral, RegexLiteral, IntLiteral, MatchR
     FloatLiteral, ClassFromJsonWithSubclassDictMeta, Select, ShowTagKeys, ShowColumns, EqualValue, NotEqualValue, \
     GreaterThanValue, GreaterThanOrEqualValue, LessThanValue, LessThanOrEqualValue, EqualField, NotEqualField, \
     GreaterThanField, GreaterThanOrEqualField, LessThanField, LessThanOrEqualField, Null, In, NotIn, BinaryBooleanExpr
-from ..utility import deep_equal
+from qutils.functions import deep_equal
 
 
 def test_meta_class():
@@ -437,10 +437,36 @@ def test_filter():
         ]
     })
 
-    assert expr.filter(lambda e: e.key != '__eqf__', recursive=False).to_query_mysql() == \
-        """(rule_name REGEXP 'logging_.*') AND (rule_name <> 'logging_rddms') AND (rule_name NOT REGEXP 'logging_r..s') AND (((create_ts = update_ts) AND (create_ts > '2014-01-01 00:00:00') AND (create_ts <= '2015-12-31 12:05:00') AND (create_ts < retire_ts) AND (version >= 1) AND (version < 3)) OR ((country IN ('UK', 'DE')) AND (expected_fire_volume > expected_min_volume) AND (expected_fire_volume <= expected_max_volume) AND (version = 4))) AND (act_type NOT IN ('logging', 'eval')) AND (expected_fire_rate = 99.9) AND (expected_fire_volume = 10000) AND (rule_id IN (6666, '7777', 8888)) AND (rule_owner = 'me') AND (rule_writer <> rule_owner) AND (rule_writer is NOT NULL)"""
-    assert expr.filter(lambda e: e.key != '__eqf__', recursive=True).to_query_mysql() == \
+    assert expr.filter(lambda e: e.key != '__eqf__').to_query_mysql() == \
         """(rule_name REGEXP 'logging_.*') AND (rule_name <> 'logging_rddms') AND (rule_name NOT REGEXP 'logging_r..s') AND (((create_ts > '2014-01-01 00:00:00') AND (create_ts <= '2015-12-31 12:05:00') AND (create_ts < retire_ts) AND (version >= 1) AND (version < 3)) OR ((country IN ('UK', 'DE')) AND (expected_fire_volume > expected_min_volume) AND (expected_fire_volume <= expected_max_volume) AND (version = 4))) AND (act_type NOT IN ('logging', 'eval')) AND (expected_fire_rate = 99.9) AND (expected_fire_volume = 10000) AND (rule_id IN (6666, '7777', 8888)) AND (rule_owner = 'me') AND (rule_writer <> rule_owner) AND (rule_writer is NOT NULL)"""
+    assert expr.filter(lambda e: False).to_query('json') == {'__and__': []}
+    assert deep_equal(
+        expr.filter(lambda e: not (isinstance(e, SchemaLiteral) and e.literal == 'create_ts')).to_query('json'),
+        {'__and__': [
+            {'rule_name': {'__regex__': 'logging_.*'}},
+            {'rule_name': {'__neq__': 'logging_rddms'}},
+            {'rule_name': {'__iregex__': 'logging_r..s'}},
+            {'__or__': [
+                {'__and__': [
+                    {'version': {'__gte__': 1}},
+                    {'version': {'__lt__': 3}}
+                ]},
+                {'__and__': [
+                    {'country': {'__in__': ['UK', 'DE']}},
+                    {'expected_fire_volume': {'__gtf__': 'expected_min_volume'}},
+                    {'expected_fire_volume': {'__ltef__': 'expected_max_volume'}},
+                    {'version': {'__eq__': 4}}
+                ]}
+            ]},
+            {'act_type': {'__nin__': ['logging', 'eval']}},
+            {'expected_fire_rate': {'__eq__': 99.9}},
+            {'expected_fire_volume': {'__eq__': 10000}},
+            {'last_modifier': {'__eqf__': 'rule_writer'}},
+            {'rule_id': {'__in__': [6666, '7777', 8888]}},
+            {'rule_owner': {'__eq__': 'me'}},
+            {'rule_writer': {'__neqf__': 'rule_owner'}},
+            {'rule_writer': {'__null__': False}}
+        ]})
 
 
 def test_map():
@@ -475,38 +501,7 @@ def test_map():
         ]
     })
 
-    assert deep_equal(expr.map(lambda e: type(e)('<replaced>', e.right) if isinstance(e, BinaryBooleanExpr) else e, recursive=False).to_query('json'), {
-        '__and__': [
-            {'<replaced>': {'__regex__': 'logging_.*'}},
-            {'<replaced>': {'__neq__': 'logging_rddms'}},
-            {'<replaced>': {'__iregex__': 'logging_r..s'}},
-            {'__or__': [
-                {'__and__': [
-                    {'create_ts': {'__eqf__': 'update_ts'}},
-                    {'create_ts': {'__gt__': datetime(2014, 1, 1, 0, 0)}},
-                    {'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5)}},
-                    {'create_ts': {'__ltf__': 'retire_ts'}},
-                    {'version': {'__gte__': 1}},
-                    {'version': {'__lt__': 3}}
-                ]},
-                {'__and__': [
-                    {'country': {'__in__': ['UK', 'DE']}},
-                    {'expected_fire_volume': {'__gtf__': 'expected_min_volume'}},
-                    {'expected_fire_volume': {'__ltef__': 'expected_max_volume'}},
-                    {'version': {'__eq__': 4}}
-                ]}
-            ]},
-            {'<replaced>': {'__nin__': ['logging', 'eval']}},
-            {'<replaced>': {'__eq__': 99.9}},
-            {'<replaced>': {'__eq__': 10000}},
-            {'<replaced>': {'__eqf__': 'rule_writer'}},
-            {'<replaced>': {'__in__': [6666, '7777', 8888]}},
-            {'<replaced>': {'__eq__': 'me'}},
-            {'<replaced>': {'__neqf__': 'rule_owner'}},
-            {'<replaced>': {'__null__': False}}
-        ]}, unordered_list=True)
-
-    assert deep_equal(expr.map(lambda e: type(e)('<replaced>', e.right) if isinstance(e, BinaryBooleanExpr) else e, recursive=True).to_query('json'), {
+    assert deep_equal(expr.map(lambda e: type(e)('<replaced>', e.right) if isinstance(e, BinaryBooleanExpr) else e).to_query('json'), {
         '__and__': [
             {'<replaced>': {'__regex__': 'logging_.*'}},
             {'<replaced>': {'__neq__': 'logging_rddms'}},
@@ -534,6 +529,36 @@ def test_map():
             {'<replaced>': {'__in__': [6666, '7777', 8888]}},
             {'<replaced>': {'__eq__': 'me'}},
             {'<replaced>': {'__neqf__': 'rule_owner'}},
+            {'<replaced>': {'__null__': False}}
+        ]}, unordered_list=True)
+    assert deep_equal(expr.map(lambda e: type(e)('<replaced>') if isinstance(e, SchemaLiteral) else e).to_query('json'), {
+        '__and__': [
+            {'<replaced>': {'__regex__': 'logging_.*'}},
+            {'<replaced>': {'__neq__': 'logging_rddms'}},
+            {'<replaced>': {'__iregex__': 'logging_r..s'}},
+            {'__or__': [
+                {'__and__': [
+                    {'<replaced>': {'__eqf__': '<replaced>'}},
+                    {'<replaced>': {'__gt__': datetime(2014, 1, 1, 0, 0)}},
+                    {'<replaced>': {'__lte__': datetime(2015, 12, 31, 12, 5)}},
+                    {'<replaced>': {'__ltf__': '<replaced>'}},
+                    {'<replaced>': {'__gte__': 1}},
+                    {'<replaced>': {'__lt__': 3}}
+                ]},
+                {'__and__': [
+                    {'<replaced>': {'__in__': ['UK', 'DE']}},
+                    {'<replaced>': {'__gtf__': '<replaced>'}},
+                    {'<replaced>': {'__ltef__': '<replaced>'}},
+                    {'<replaced>': {'__eq__': 4}}
+                ]}
+            ]},
+            {'<replaced>': {'__nin__': ['logging', 'eval']}},
+            {'<replaced>': {'__eq__': 99.9}},
+            {'<replaced>': {'__eq__': 10000}},
+            {'<replaced>': {'__eqf__': '<replaced>'}},
+            {'<replaced>': {'__in__': [6666, '7777', 8888]}},
+            {'<replaced>': {'__eq__': 'me'}},
+            {'<replaced>': {'__neqf__': '<replaced>'}},
             {'<replaced>': {'__null__': False}}
         ]}, unordered_list=True)
 
