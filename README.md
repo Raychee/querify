@@ -1,4 +1,5 @@
 # Querify
+[![Build Status](https://travis-ci.org/Raychee/querify.svg?branch=master)](https://travis-ci.org/Raychee/querify)
 
 A simple query generator from filter conditions in form of json.
 

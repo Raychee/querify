@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 
-VERSION = None
+VERSION = ''
 
 with open('querify/__init__.py') as f:
     exec(f.readline())

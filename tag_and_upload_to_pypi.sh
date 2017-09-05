@@ -8,5 +8,5 @@ COMMENT=$(git log -1 --pretty=%B | cat)
 
 git tag ${VERSION} -m "${COMMENT}"
 git push origin --tags && \
-python setup.py sdist bdist_wheel
+python setup.py sdist bdist_wheel && \
 twine upload --skip-existing dist/*
