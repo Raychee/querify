@@ -1,7 +1,6 @@
 from distutils.core import setup
 
-
-VERSION = '0.0.10'
+from querify import VERSION
 
 
 setup(

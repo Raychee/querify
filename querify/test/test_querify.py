@@ -441,7 +441,8 @@ def test_filter():
         """(rule_name REGEXP 'logging_.*') AND (rule_name <> 'logging_rddms') AND (rule_name NOT REGEXP 'logging_r..s') AND (((create_ts > '2014-01-01 00:00:00') AND (create_ts <= '2015-12-31 12:05:00') AND (create_ts < retire_ts) AND (version >= 1) AND (version < 3)) OR ((country IN ('UK', 'DE')) AND (expected_fire_volume > expected_min_volume) AND (expected_fire_volume <= expected_max_volume) AND (version = 4))) AND (act_type NOT IN ('logging', 'eval')) AND (expected_fire_rate = 99.9) AND (expected_fire_volume = 10000) AND (rule_id IN (6666, '7777', 8888)) AND (rule_owner = 'me') AND (rule_writer <> rule_owner) AND (rule_writer is NOT NULL)"""
     assert expr.filter(lambda e: False).to_query('json') == {'__and__': []}
     assert deep_equal(
-        expr.filter(lambda e: not (isinstance(e, SchemaLiteral) and e.literal == 'create_ts')).to_query('json'),
+        expr.filter(
+            lambda e: not (isinstance(e, SchemaLiteral) and e.literal == 'create_ts')).to_query('json'),
         {'__and__': [
             {'rule_name': {'__regex__': 'logging_.*'}},
             {'rule_name': {'__neq__': 'logging_rddms'}},
@@ -467,6 +468,21 @@ def test_filter():
             {'rule_writer': {'__neqf__': 'rule_owner'}},
             {'rule_writer': {'__null__': False}}
         ]})
+    assert deep_equal(
+        expr.filter(lambda e: [type(ee) for ee in e.ancestors()][-3:] != [And, Or, And]).to_query('json'),
+        {'__and__': [
+            {'rule_name': {'__regex__': 'logging_.*'}},
+            {'rule_name': {'__neq__': 'logging_rddms'}},
+            {'rule_name': {'__iregex__': 'logging_r..s'}},
+            {'act_type': {'__nin__': ['logging', 'eval']}},
+            {'expected_fire_rate': {'__eq__': 99.9}},
+            {'expected_fire_volume': {'__eq__': 10000}},
+            {'last_modifier': {'__eqf__': 'rule_writer'}},
+            {'rule_id': {'__in__': [6666, '7777', 8888]}},
+            {'rule_owner': {'__eq__': 'me'}},
+            {'rule_writer': {'__neqf__': 'rule_owner'}},
+            {'rule_writer': {'__null__': False}}
+        ]}, unordered_list=True)
 
 
 def test_map():
@@ -531,11 +547,13 @@ def test_map():
             {'<replaced>': {'__neqf__': 'rule_owner'}},
             {'<replaced>': {'__null__': False}}
         ]}, unordered_list=True)
-    assert deep_equal(expr.map(lambda e: type(e)('<replaced>') if isinstance(e, SchemaLiteral) else e).to_query('json'), {
-        '__and__': [
-            {'<replaced>': {'__regex__': 'logging_.*'}},
-            {'<replaced>': {'__neq__': 'logging_rddms'}},
-            {'<replaced>': {'__iregex__': 'logging_r..s'}},
+    assert deep_equal(
+        expr.map(
+            lambda e: type(e)('<replaced>') if isinstance(e, SchemaLiteral) and [type(ee) for ee in e.ancestors()][-3:] == [And, Or, And] else e).to_query('json'),
+        {'__and__': [
+            {'rule_name': {'__regex__': 'logging_.*'}},
+            {'rule_name': {'__neq__': 'logging_rddms'}},
+            {'rule_name': {'__iregex__': 'logging_r..s'}},
             {'__or__': [
                 {'__and__': [
                     {'<replaced>': {'__eqf__': '<replaced>'}},
@@ -552,14 +570,14 @@ def test_map():
                     {'<replaced>': {'__eq__': 4}}
                 ]}
             ]},
-            {'<replaced>': {'__nin__': ['logging', 'eval']}},
-            {'<replaced>': {'__eq__': 99.9}},
-            {'<replaced>': {'__eq__': 10000}},
-            {'<replaced>': {'__eqf__': '<replaced>'}},
-            {'<replaced>': {'__in__': [6666, '7777', 8888]}},
-            {'<replaced>': {'__eq__': 'me'}},
-            {'<replaced>': {'__neqf__': '<replaced>'}},
-            {'<replaced>': {'__null__': False}}
+            {'act_type': {'__nin__': ['logging', 'eval']}},
+            {'expected_fire_rate': {'__eq__': 99.9}},
+            {'expected_fire_volume': {'__eq__': 10000}},
+            {'last_modifier': {'__eqf__': 'rule_writer'}},
+            {'rule_id': {'__in__': [6666, '7777', 8888]}},
+            {'rule_owner': {'__eq__': 'me'}},
+            {'rule_writer': {'__neqf__': 'rule_owner'}},
+            {'rule_writer': {'__null__': False}}
         ]}, unordered_list=True)
 
 

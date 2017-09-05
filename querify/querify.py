@@ -1,4 +1,5 @@
 import re
+from copy import copy
 from datetime import datetime
 from typing import Union, Dict, Optional, Any, List
 
@@ -116,8 +117,23 @@ class Query:
 class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
     base = True
 
+    def __init__(self):
+        self.parent = None
+
     @classmethod
     def from_json(cls, json: Union['Expr', JsonType]) -> 'Expr':
+        expr = cls._from_json(json)
+
+        def add_parent(expr):
+            for sub_expr_ref in expr.iter_sub_expr_ref():
+                sub_expr_ref.v.parent = expr
+                add_parent(sub_expr_ref.v)
+
+        add_parent(expr)
+        return expr
+
+    @classmethod
+    def _from_json(cls, json: Union['Expr', JsonType]) -> 'Expr':
         if isinstance(json, cls):
             expr = json
         else:
@@ -141,9 +157,10 @@ class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
         """
         self_ = map_fn(self)
         if self_ is None or self_ is self:
-            for sub_expr_ref in self.iter_sub_expr_ref():
-                sub_expr_ = sub_expr_ref.v.map(map_fn)
-                sub_expr_ref.v = sub_expr_
+            self_ = copy(self)
+        for sub_expr_ref in self_.iter_sub_expr_ref():
+            sub_expr_ = sub_expr_ref.v.map(map_fn)
+            sub_expr_ref.v = sub_expr_
         return self_
 
     def filter(self, filter_fn=lambda e: True):
@@ -154,11 +171,16 @@ class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
         nodes in their expr list according to filter_fn's results, and return the same LogicalExpr but with a shortened
         list of sub exprs.
         """
+        filtered = And([])
         if filter_fn(self):
-            filtered_sub_exprs = (sub_expr_ref.v.filter(filter_fn) for sub_expr_ref in self.iter_sub_expr_ref())
-            if not any(isinstance(e, And) and len(e) == 0 for e in filtered_sub_exprs):
-                return self
-        return And([])
+            self_ = copy(self)
+            for sub_expr_ref in self_.iter_sub_expr_ref():
+                filtered_sub_expr = sub_expr_ref.v.filter(filter_fn)
+                if isinstance(filtered_sub_expr, And) and len(filtered_sub_expr) == 0:
+                    break
+            else:
+                filtered = self_
+        return filtered
 
     @classmethod
     def cls_keys_from_json(cls, json: JsonType):
@@ -171,6 +193,12 @@ class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
         yield self
         for sub_expr_ref in self.iter_sub_expr_ref():
             yield from sub_expr_ref.v.iter_expr()
+
+    def ancestors(self):
+        expr = self
+        while expr is not None:
+            yield expr
+            expr = expr.parent
 
     def iter_sub_expr_ref(self):
         return; yield
@@ -186,6 +214,9 @@ class LiteralExpr(Expr):
             raise InvalidQuery('Invalid type of literal "{}". Expected "{}", but got "{}"'
                                .format(literal, self.key.__name__, type(literal).__name__))
         self.literal = literal
+
+    def __copy__(self):
+        return type(self)(self.literal)
 
     def validate_literal(self, literal):
         return isinstance(self.key, type) and isinstance(literal, self.key)
@@ -450,7 +481,10 @@ class BooleanExpr(OperatorExpr):
 class UnaryBooleanExpr(BooleanExpr):
     def __init__(self, operand: Union[Expr, JsonObjectType]):
         super().__init__()
-        self.operand = BooleanExpr.from_json(operand)
+        self.operand = BooleanExpr._from_json(operand)
+
+    def __copy__(self):
+        return type(self)(self.operand)
 
     @classmethod
     def init_args_from_json(cls, json):
@@ -500,8 +534,11 @@ class Not(UnaryBooleanExpr):
 class BinaryBooleanExpr(BooleanExpr):
     def __init__(self, left, right):
         super().__init__()
-        self.left = SchemaLiteral.from_json(left)
+        self.left = SchemaLiteral._from_json(left)
         self.right = right
+
+    def __copy__(self):
+        return type(self)(self.left, self.right)
 
     @classmethod
     def init_args_from_json(cls, json):
@@ -555,7 +592,7 @@ class BinaryComparisonExpr(BinaryBooleanExpr):
 class FieldCompareValueExpr(BinaryComparisonExpr):
     def __init__(self, left: Union[SchemaLiteral, str], right):
         super().__init__(left, right)
-        self.right = LiteralExpr.from_json(right)
+        self.right = LiteralExpr._from_json(right)
 
 
 class FieldCompareFieldExpr(BinaryComparisonExpr):
@@ -563,7 +600,7 @@ class FieldCompareFieldExpr(BinaryComparisonExpr):
         super().__init__(left, right)
         if not isinstance(self.right, (SchemaLiteral, str)):
             raise InvalidQuery('The operand of "{}" must be of string type referring to a field name.'.format(self.key))
-        self.right = SchemaLiteral.from_json(right)
+        self.right = SchemaLiteral._from_json(right)
 
 
 class FieldAssertionExpr(BinaryComparisonExpr):
@@ -571,7 +608,7 @@ class FieldAssertionExpr(BinaryComparisonExpr):
         super().__init__(left, right)
         if not isinstance(self.right, (BooleanLiteral, bool)):
             raise InvalidQuery('The operand of "{}" must be either true or false.'.format(self.key))
-        self.right = BooleanLiteral.from_json(right)
+        self.right = BooleanLiteral._from_json(right)
 
 
 class Equal:
@@ -697,7 +734,7 @@ class MatchRegex(FieldCompareValueExpr):
 
     def __init__(self, left, right):
         super().__init__(left, right)
-        self.right = RegexLiteral.from_json(right)
+        self.right = RegexLiteral._from_json(right)
 
     def to_query_mongo(self) -> JsonType:
         return {self.left.to_query_mongo(): self.right.to_query_mongo()}
@@ -711,7 +748,7 @@ class InverseMatchRegex(FieldCompareValueExpr):
 
     def __init__(self, left, right):
         super().__init__(left, right)
-        self.right = RegexLiteral.from_json(right)
+        self.right = RegexLiteral._from_json(right)
 
     def to_query_mongo(self) -> JsonType:
         return {self.left.to_query_mongo(): {'$not': self.right.to_query_mongo()}}
@@ -747,7 +784,10 @@ class FieldCompareListExpr(BinaryBooleanExpr):
         super().__init__(left, right)
         if not isinstance(self.right, list):
             raise InvalidQuery('The operand of "{}" must be a list.'.format(self.key))
-        self.right = [LiteralExpr.from_json(e) for e in right]
+        self.right = [LiteralExpr._from_json(e) for e in right]
+
+    def __copy__(self):
+        return type(self)(self.left, list(self.right))
 
     def iter_sub_expr_ref(self):
         yield AttrRef(self, 'left')
@@ -804,8 +844,11 @@ class LogicalExpr(BooleanExpr):
         super().__init__()
         if not isinstance(exprs, list):
             raise InvalidQuery('The "{}" operator is not applied on a list.'.format(self.key))
-        exprs = (BooleanExpr.from_json(e) for e in exprs)
+        exprs = (BooleanExpr._from_json(e) for e in exprs)
         self.exprs = [e for e in exprs if isinstance(e, LogicalExpr) and len(e) > 0 or not isinstance(e, LogicalExpr)]
+
+    def __copy__(self):
+        return type(self)(list(self.exprs))
 
     def to_query_json(self) -> JsonType:
         if self.key is None:
@@ -844,11 +887,12 @@ class LogicalExpr(BooleanExpr):
         return len(self.exprs)
 
     def filter(self, filter_fn=lambda e: True):
+        filtered = And([])
         if filter_fn(self):
             filtered_sub_exprs = (sub_expr.filter(filter_fn) for sub_expr in self.exprs)
             filtered_sub_exprs = [e for e in filtered_sub_exprs if not (isinstance(e, And) and len(e) == 0)]
-            return type(self)(filtered_sub_exprs)
-        return And([])
+            filtered = type(self)(filtered_sub_exprs)
+        return filtered
 
     @classmethod
     def init_args_from_json(cls, json):
@@ -919,11 +963,14 @@ class Select(Stmt):
                  columns: Optional[List[Union[SchemaLiteral, str]]] = None,
                  where: Optional[Union[BooleanExpr, JsonObjectType]] = None):
         super().__init__()
-        self.table = SchemaLiteral.from_json(table)
-        self.retention_policy = retention_policy and SchemaLiteral.from_json(retention_policy)
-        self.db = db and SchemaLiteral.from_json(db)
-        self.columns = columns and [SchemaLiteral.from_json(c) for c in columns]
-        self.where = where and BooleanExpr.from_json(where)
+        self.table = SchemaLiteral._from_json(table)
+        self.retention_policy = retention_policy and SchemaLiteral._from_json(retention_policy)
+        self.db = db and SchemaLiteral._from_json(db)
+        self.columns = columns and [SchemaLiteral._from_json(c) for c in columns]
+        self.where = where and BooleanExpr._from_json(where)
+
+    def __copy__(self):
+        return type(self)(self.table, self.retention_policy, self.db, self.columns, self.where)
 
     def to_query_influx(self):
         if self.columns:
@@ -979,10 +1026,13 @@ class ShowTagKeys(Stmt):
                  db: Optional[Union[SchemaLiteral, str]] = None,
                  where: Optional[Union[BooleanExpr, JsonObjectType]] = None):
         super().__init__()
-        self.measurement = measurement and SchemaLiteral.from_json(measurement)
-        self.retention_policy = retention_policy and SchemaLiteral.from_json(retention_policy)
-        self.db = db and SchemaLiteral.from_json(db)
-        self.where = where and BooleanExpr.from_json(where)
+        self.measurement = measurement and SchemaLiteral._from_json(measurement)
+        self.retention_policy = retention_policy and SchemaLiteral._from_json(retention_policy)
+        self.db = db and SchemaLiteral._from_json(db)
+        self.where = where and BooleanExpr._from_json(where)
+
+    def __copy__(self):
+        return type(self)(self.measurement, self.retention_policy, self.db, self.where)
 
     def to_query_influx(self):
         if self.db:
@@ -1011,8 +1061,11 @@ class ShowTagKeys(Stmt):
 class ShowColumns(Stmt):
     def __init__(self, table: Union[SchemaLiteral, str], db: Optional[Union[SchemaLiteral, str]] = None):
         super().__init__()
-        self.table = SchemaLiteral.from_json(table)
-        self.db = db and SchemaLiteral.from_json(db)
+        self.table = SchemaLiteral._from_json(table)
+        self.db = db and SchemaLiteral._from_json(db)
+
+    def __copy__(self):
+        return type(self)(self.table, self.db)
 
     def to_query_influx(self):
         if self.db:
