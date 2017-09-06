@@ -405,7 +405,7 @@ def test_iter_exprs():
     assert len([e for e in all_sub_exprs if type(e) is NotIn]) == 1
 
 
-def test_filter():
+def test_transform():
     expr = Expr.from_json({
         'rule_id': [6666, '7777', 8888],
         'act_type': {'__nin__': ['logging', 'eval']},
@@ -437,12 +437,12 @@ def test_filter():
         ]
     })
 
-    assert expr.filter(lambda e: e.key != '__eqf__').to_query_mysql() == \
+    assert expr.transform(lambda e: None).to_query('json') == {'__and__': []}
+    assert expr.transform(lambda e: e if e.key != '__eqf__' else None).to_query_mysql() == \
         """(rule_name REGEXP 'logging_.*') AND (rule_name <> 'logging_rddms') AND (rule_name NOT REGEXP 'logging_r..s') AND (((create_ts > '2014-01-01 00:00:00') AND (create_ts <= '2015-12-31 12:05:00') AND (create_ts < retire_ts) AND (version >= 1) AND (version < 3)) OR ((country IN ('UK', 'DE')) AND (expected_fire_volume > expected_min_volume) AND (expected_fire_volume <= expected_max_volume) AND (version = 4))) AND (act_type NOT IN ('logging', 'eval')) AND (expected_fire_rate = 99.9) AND (expected_fire_volume = 10000) AND (rule_id IN (6666, '7777', 8888)) AND (rule_owner = 'me') AND (rule_writer <> rule_owner) AND (rule_writer is NOT NULL)"""
-    assert expr.filter(lambda e: False).to_query('json') == {'__and__': []}
     assert deep_equal(
-        expr.filter(
-            lambda e: not (isinstance(e, SchemaLiteral) and e.literal == 'create_ts')).to_query('json'),
+        expr.transform(
+            lambda e: e if not (isinstance(e, SchemaLiteral) and e.literal == 'create_ts') else None).to_query('json'),
         {'__and__': [
             {'rule_name': {'__regex__': 'logging_.*'}},
             {'rule_name': {'__neq__': 'logging_rddms'}},
@@ -469,7 +469,7 @@ def test_filter():
             {'rule_writer': {'__null__': False}}
         ]})
     assert deep_equal(
-        expr.filter(lambda e: [type(ee) for ee in e.ancestors()][-3:] != [And, Or, And]).to_query('json'),
+        expr.transform(lambda e: e if [type(ee) for ee in e.ancestors()][-3:] != [And, Or, And] else None).to_query('json'),
         {'__and__': [
             {'rule_name': {'__regex__': 'logging_.*'}},
             {'rule_name': {'__neq__': 'logging_rddms'}},
@@ -483,41 +483,7 @@ def test_filter():
             {'rule_writer': {'__neqf__': 'rule_owner'}},
             {'rule_writer': {'__null__': False}}
         ]}, unordered_list=True)
-
-
-def test_map():
-    expr = Expr.from_json({
-        'rule_id': [6666, '7777', 8888],
-        'act_type': {'__nin__': ['logging', 'eval']},
-        'expected_fire_volume': 10000,
-        'expected_fire_rate': 99.9,
-        'rule_owner': 'me',
-        'rule_writer': {'__neqf__': 'rule_owner',
-                        '__null__': False},
-        'last_modifier': {'__eqf__': 'rule_writer'},
-        '__or__': [
-            {
-                'create_ts': {'__lte__': datetime(2015, 12, 31, 12, 5),
-                              '__gt__': datetime(2014, 1, 1, 0, 0),
-                              '__eqf__': 'update_ts',
-                              '__ltf__': 'retire_ts'},
-                'version': {'__lt__': 3, '__gte__': 1},
-            },
-            {
-                'version': {'__eq__': 4},
-                'expected_fire_volume': {'__ltef__': 'expected_max_volume',
-                                         '__gtf__': 'expected_min_volume'},
-                'country': {'__in__': ['UK', 'DE']}
-            }
-        ],
-        '__and__': [
-            {'rule_name': '/logging_.*/'},
-            {'rule_name': {'__neq__': 'logging_rddms'}},
-            {'rule_name': {'__iregex__': 'logging_r..s'}}
-        ]
-    })
-
-    assert deep_equal(expr.map(lambda e: type(e)('<replaced>', e.right) if isinstance(e, BinaryBooleanExpr) else e).to_query('json'), {
+    assert deep_equal(expr.transform(lambda e: type(e)('<replaced>', e.right) if isinstance(e, BinaryBooleanExpr) else e).to_query('json'), {
         '__and__': [
             {'<replaced>': {'__regex__': 'logging_.*'}},
             {'<replaced>': {'__neq__': 'logging_rddms'}},
@@ -548,7 +514,7 @@ def test_map():
             {'<replaced>': {'__null__': False}}
         ]}, unordered_list=True)
     assert deep_equal(
-        expr.map(
+        expr.transform(
             lambda e: type(e)('<replaced>') if isinstance(e, SchemaLiteral) and [type(ee) for ee in e.ancestors()][-3:] == [And, Or, And] else e).to_query('json'),
         {'__and__': [
             {'rule_name': {'__regex__': 'logging_.*'}},

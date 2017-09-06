@@ -149,40 +149,30 @@ class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
     def __iter__(self):
         return self.iter_expr()
 
-    def map(self, map_fn=lambda e: e):
+    def transform(self, transform_fn=lambda e: e):
         """
-        Expr.map will traverse all the nodes down the expr tree and apply map_fn on them respectively.
-        If map_fn returns nothing or None, it is treated as if map_fn returns a copy of the original node.
-        No matter what node is returned, the recursive mapping will continue starting from the returned node
-        (the original node will be disgarded). With that being said, Expr.map is guaranteed to return a full new copy
-        of the whole tree.
+        Expr.transform will traverse recursively starting from expr as the root node, and apply transform_fn on each
+        expr node.
+        If transform_fn returns the input node itself, nothing happens and the recursion continues.
+        If transform_fn returns nothing or None, the node will be eliminated entirely. If an expr subtree is
+        syntactically invalid due to elimination of a node in the tree, the entire subtree will be eliminated as well.
+        If transform_fn returns a new node, the returned node will replace the original one, and the recursion starting
+        from this original node will be discarded.
+        Regardless of what transform_fn returns, Expr.transform is guaranteed to return a full new copy of the tree.
         """
-        self_ = map_fn(self)
-        if self_ is None or self_ is self:
-            self_ = copy(self)
-        for sub_expr_ref in self_.iter_sub_expr_ref():
-            sub_expr_ = sub_expr_ref.v.map(map_fn)
-            sub_expr_ref.v = sub_expr_
-        return self_
-
-    def filter(self, filter_fn=lambda e: True):
-        """
-        Expr.filter will traverse all the nodes down the expr tree and prune those to which filter_fn returns False.
-        By default, a node will be eliminated entirely (replaced with And([])) if any of its descendants is Falsy
-        indicated by filter_fn. Only the LogicalExprs (whose filter method is overridden below) will only eliminate those
-        nodes in their expr list according to filter_fn's results, and return the same LogicalExpr but with a shortened
-        list of sub exprs. Expr.filter is guaranteed to return a full new copy of the whole tree.
-        """
-        filtered = And([])
-        if filter_fn(self):
-            self_ = copy(self)
-            for sub_expr_ref in self_.iter_sub_expr_ref():
-                filtered_sub_expr = sub_expr_ref.v.filter(filter_fn)
-                if isinstance(filtered_sub_expr, And) and len(filtered_sub_expr) == 0:
-                    break
-            else:
-                filtered = self_
-        return filtered
+        transformed_self = transform_fn(self)
+        if transformed_self is None:
+            return And([])
+        if transformed_self is self:
+            transformed_self = copy(self)
+            for sub_expr_ref in transformed_self.iter_sub_expr_ref():
+                sub_expr = sub_expr_ref.v
+                transformed_sub_expr = sub_expr.transform(transform_fn)
+                if isinstance(transformed_sub_expr, And) and len(transformed_sub_expr) == 0:
+                    if not isinstance(sub_expr, And):
+                        return And([])
+                sub_expr_ref.v = transformed_sub_expr
+        return transformed_self
 
     @classmethod
     def cls_keys_from_json(cls, json: JsonType):
@@ -888,13 +878,15 @@ class LogicalExpr(BooleanExpr):
     def __len__(self):
         return len(self.exprs)
 
-    def filter(self, filter_fn=lambda e: True):
-        filtered = And([])
-        if filter_fn(self):
-            filtered_sub_exprs = (sub_expr.filter(filter_fn) for sub_expr in self.exprs)
-            filtered_sub_exprs = [e for e in filtered_sub_exprs if not (isinstance(e, And) and len(e) == 0)]
-            filtered = type(self)(filtered_sub_exprs)
-        return filtered
+    def transform(self, transform_fn=lambda e: e):
+        transformed_self = transform_fn(self)
+        if transformed_self is None:
+            return And([])
+        if transformed_self is self:
+            transformed_sub_exprs = (e.transform(transform_fn) for e in self.exprs)
+            transformed_sub_exprs = [e for e in transformed_sub_exprs if not (isinstance(e, And) and len(e) == 0)]
+            transformed_self = type(self)(transformed_sub_exprs)
+        return transformed_self
 
     @classmethod
     def init_args_from_json(cls, json):
