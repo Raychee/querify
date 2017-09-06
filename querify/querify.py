@@ -152,8 +152,10 @@ class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
     def map(self, map_fn=lambda e: e):
         """
         Expr.map will traverse all the nodes down the expr tree and apply map_fn on them respectively.
-        If the map_fn returns None or the node itself, the recursive traverse starting from this node continues,
-        and otherwise don't.
+        If map_fn returns nothing or None, it is treated as if map_fn returns a copy of the original node.
+        No matter what node is returned, the recursive mapping will continue starting from the returned node
+        (the original node will be disgarded). With that being said, Expr.map is guaranteed to return a full new copy
+        of the whole tree.
         """
         self_ = map_fn(self)
         if self_ is None or self_ is self:
@@ -167,9 +169,9 @@ class Expr(Query, metaclass=ClassFromJsonWithSubclassDictMeta):
         """
         Expr.filter will traverse all the nodes down the expr tree and prune those to which filter_fn returns False.
         By default, a node will be eliminated entirely (replaced with And([])) if any of its descendants is Falsy
-        indicated by filter_fn. Only the LogicalExprs (whose map method is overridden below) will only eliminate those
+        indicated by filter_fn. Only the LogicalExprs (whose filter method is overridden below) will only eliminate those
         nodes in their expr list according to filter_fn's results, and return the same LogicalExpr but with a shortened
-        list of sub exprs.
+        list of sub exprs. Expr.filter is guaranteed to return a full new copy of the whole tree.
         """
         filtered = And([])
         if filter_fn(self):
